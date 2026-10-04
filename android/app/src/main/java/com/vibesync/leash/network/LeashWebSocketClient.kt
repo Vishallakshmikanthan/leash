@@ -66,6 +66,14 @@ class LeashWebSocketClient(
     private val _guardStats = MutableStateFlow(GuardStats())
     val guardStats: StateFlow<GuardStats> = _guardStats.asStateFlow()
 
+    // Last Blocked Action Notice (for active blocked-action feedback)
+    private val _lastBlockedNotice = MutableStateFlow<BlockedNotice?>(null)
+    val lastBlockedNotice: StateFlow<BlockedNotice?> = _lastBlockedNotice.asStateFlow()
+
+    fun clearBlockedNotice() {
+        _lastBlockedNotice.value = null
+    }
+
     fun updatePairing(newHost: String, newPort: Int, newSecret: String) {
         disconnect()
         host = newHost.trim()
@@ -285,6 +293,19 @@ class LeashWebSocketClient(
         return sent
     }
 
+    fun timeoutAction(bundle: ActionBundle): Boolean {
+        val timeoutNote = "Action timed out after 30 seconds (Fail-Closed default)"
+        val sent = sendDecision(
+            actionId = bundle.request.id,
+            sessionId = bundle.request.session,
+            verdict = Verdict.DENY,
+            by = DecidedBy.TIMEOUT,
+            note = timeoutNote
+        )
+        recordDecisionOutcome(bundle, Verdict.DENY, DecidedBy.TIMEOUT, timeoutNote)
+        return sent
+    }
+
     private fun recordDecisionOutcome(
         bundle: ActionBundle,
         verdict: Verdict,
@@ -319,6 +340,20 @@ class LeashWebSocketClient(
             approvedCount = _guardStats.value.approvedCount + if (verdict == Verdict.ALLOW) 1 else 0,
             deniedCount = _guardStats.value.deniedCount + if (verdict == Verdict.DENY) 1 else 0
         )
+
+        // Set active blocked action notice if blocked or timed out
+        if (verdict == Verdict.DENY) {
+            val cmd = bundle.request.command ?: bundle.request.target_path ?: bundle.request.tool_name ?: "Unknown Action"
+            _lastBlockedNotice.value = BlockedNotice(
+                actionId = bundle.request.id,
+                command = cmd,
+                reason = note,
+                agent = bundle.request.agent,
+                worktree = bundle.request.worktree,
+                decidedBy = by,
+                timestamp = System.currentTimeMillis()
+            )
+        }
     }
 
     fun sendDecision(
@@ -509,6 +544,7 @@ class LeashWebSocketClient(
             )
         } else {
             // Add to pending queue for user approval
+            _incomingActions.tryEmit(bundle)
             _pendingActionsQueue.value = _pendingActionsQueue.value + bundle
             _guardStats.value = _guardStats.value.copy(
                 totalIntercepted = _guardStats.value.totalIntercepted + 1,

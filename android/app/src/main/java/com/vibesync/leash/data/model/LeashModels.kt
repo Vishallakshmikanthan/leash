@@ -199,6 +199,17 @@ data class GuardStats(
     val taintedCount: Int = 0
 )
 
+@Serializable
+data class BlockedNotice(
+    val actionId: String,
+    val command: String,
+    val reason: String,
+    val agent: String,
+    val worktree: String?,
+    val decidedBy: DecidedBy,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
 enum class GuardTab {
     GUARD,
     FEED,

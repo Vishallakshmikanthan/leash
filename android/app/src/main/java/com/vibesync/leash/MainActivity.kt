@@ -8,6 +8,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.biometric.BiometricPrompt
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
@@ -31,7 +35,6 @@ import com.vibesync.leash.service.LeashForegroundService
 import com.vibesync.leash.ui.screens.*
 import com.vibesync.leash.ui.theme.*
 import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -58,23 +61,25 @@ class MainActivity : ComponentActivity() {
 
                 val connectionState by client.connectionState.collectAsState()
                 val pendingQueue by client.pendingActionsQueue.collectAsState()
+                val blockedNotice by client.lastBlockedNotice.collectAsState()
                 val feedItems by client.actionHistory.collectAsState()
                 val sessionContext by client.sessionContext.collectAsState()
                 val guardStats by client.guardStats.collectAsState()
 
-                // Haptic feedback listener
+                // Haptic feedback listener for incoming actions
                 LaunchedEffect(Unit) {
                     client.incomingActions.collectLatest { bundle ->
                         triggerHapticAlert(bundle.assessment.severity)
                     }
                 }
 
+                // Haptic feedback listener for provenance alerts
                 LaunchedEffect(Unit) {
                     client.incomingProvenance.collectLatest { pEvent ->
                         triggerHapticAlert(Severity.HIGH)
                         Toast.makeText(
                             this@MainActivity,
-                            "PROVENANCE ALERT: Untrusted read in ${pEvent.source}",
+                            "PROVENANCE ALERT: Untrusted input in ${pEvent.source}",
                             Toast.LENGTH_LONG
                         ).show()
                     }
@@ -105,19 +110,33 @@ class MainActivity : ComponentActivity() {
                             GuardTab.GUARD -> {
                                 GuardMainScreen(
                                     pendingQueue = pendingQueue,
+                                    blockedNotice = blockedNotice,
                                     connectionState = connectionState,
                                     sessionContext = sessionContext,
-                                    onApprove = { bundle ->
-                                        if (bundle.assessment.severity == Severity.HIGH || bundle.assessment.severity == Severity.CRITICAL) {
+                                    onApprove = { bundle, decidedBy ->
+                                        if (decidedBy == DecidedBy.BIOMETRIC) {
                                             authenticateBiometric(bundle)
                                         } else {
                                             client.approveAction(bundle, DecidedBy.TAP)
-                                            Toast.makeText(this@MainActivity, "Approved (Tap)", Toast.LENGTH_SHORT).show()
+                                            triggerApprovedHaptic()
+                                            Toast.makeText(this@MainActivity, "Approved via Tap", Toast.LENGTH_SHORT).show()
                                         }
                                     },
                                     onDeny = { bundle, note ->
                                         client.denyAction(bundle, DecidedBy.TAP, note)
-                                        Toast.makeText(this@MainActivity, "Action Blocked", Toast.LENGTH_SHORT).show()
+                                        triggerBlockedHaptic()
+                                        Toast.makeText(this@MainActivity, "Action Blocked (Feedback Sent)", Toast.LENGTH_SHORT).show()
+                                    },
+                                    onTimeout = { bundle ->
+                                        client.timeoutAction(bundle)
+                                        triggerBlockedHaptic()
+                                        Toast.makeText(this@MainActivity, "Action Timed Out (Fail-Closed)", Toast.LENGTH_SHORT).show()
+                                    },
+                                    onDismissBlockedNotice = {
+                                        client.clearBlockedNotice()
+                                    },
+                                    onViewFeed = {
+                                        selectedTab = GuardTab.FEED
                                     },
                                     onOpenDemo = { showDemoSheet = true }
                                 )
@@ -320,104 +339,241 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun GuardMainScreen(
         pendingQueue: List<ActionBundle>,
+        blockedNotice: BlockedNotice?,
         connectionState: ConnectionState,
         sessionContext: SessionContext,
-        onApprove: (ActionBundle) -> Unit,
+        onApprove: (ActionBundle, DecidedBy) -> Unit,
         onDeny: (ActionBundle, String?) -> Unit,
+        onTimeout: (ActionBundle) -> Unit,
+        onDismissBlockedNotice: () -> Unit,
+        onViewFeed: () -> Unit,
         onOpenDemo: () -> Unit
     ) {
-        if (pendingQueue.isNotEmpty()) {
-            val topBundle = pendingQueue.first()
-            ApprovalCard(
-                bundle = topBundle,
-                queueIndex = 1,
-                queueTotal = pendingQueue.size,
-                onApprove = { onApprove(topBundle) },
-                onDeny = { reason -> onDeny(topBundle, reason) }
-            )
-        } else {
-            // Idle Monitoring Shield
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(24.dp),
-                contentAlignment = Alignment.Center
+        var queueIndex by remember { mutableIntStateOf(0) }
+
+        // Keep queueIndex clamped to pending queue bounds
+        LaunchedEffect(pendingQueue.size) {
+            if (pendingQueue.isEmpty()) {
+                queueIndex = 0
+            } else if (queueIndex >= pendingQueue.size) {
+                queueIndex = pendingQueue.size - 1
+            }
+        }
+
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Blocked-Action Feedback Banner (Failsafe confirmation)
+            AnimatedVisibility(
+                visible = blockedNotice != null,
+                enter = slideInVertically() + fadeIn(),
+                exit = slideOutVertically() + fadeOut()
             ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
+                blockedNotice?.let { notice ->
+                    BlockedActionBanner(
+                        notice = notice,
+                        onDismiss = onDismissBlockedNotice,
+                        onViewFeed = onViewFeed
+                    )
+                }
+            }
+
+            if (pendingQueue.isNotEmpty()) {
+                val clampedIndex = queueIndex.coerceIn(0, pendingQueue.size - 1)
+                val currentBundle = pendingQueue[clampedIndex]
+
+                ApprovalCard(
+                    bundle = currentBundle,
+                    queueIndex = clampedIndex + 1,
+                    queueTotal = pendingQueue.size,
+                    initialTimeoutSeconds = 30,
+                    onNextInQueue = {
+                        if (queueIndex < pendingQueue.size - 1) queueIndex += 1 else queueIndex = 0
+                    },
+                    onPreviousInQueue = {
+                        if (queueIndex > 0) queueIndex -= 1 else queueIndex = pendingQueue.size - 1
+                    },
+                    onApprove = { decidedBy -> onApprove(currentBundle, decidedBy) },
+                    onDeny = { reason -> onDeny(currentBundle, reason) },
+                    onTimeout = { onTimeout(currentBundle) }
+                )
+            } else {
+                // Idle Monitoring Shield
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
                 ) {
-                    Surface(
-                        color = LeashSurfaceVariant,
-                        shape = CircleShape,
-                        border = androidx.compose.foundation.BorderStroke(
-                            2.dp,
-                            if (connectionState == ConnectionState.CONNECTED) LeashPrimary.copy(alpha = 0.6f) else LeashCritical.copy(alpha = 0.6f)
-                        ),
-                        modifier = Modifier.size(110.dp)
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
                     ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = if (connectionState == ConnectionState.CONNECTED) Icons.Default.Security else Icons.Default.ShieldMoon,
-                                contentDescription = "Shield Active",
-                                tint = if (connectionState == ConnectionState.CONNECTED) LeashPrimary else LeashCritical,
-                                modifier = Modifier.size(54.dp)
-                            )
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(20.dp))
-
-                    Text(
-                        text = if (connectionState == ConnectionState.CONNECTED) "GUARD ACTIVE & MONITORING" else "FAIL-CLOSED ACTIVE",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.ExtraBold,
-                        color = Color.White,
-                        letterSpacing = 1.sp
-                    )
-
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    Text(
-                        text = if (connectionState == ConnectionState.CONNECTED)
-                            "Interception link verified. Waiting for agent shell commands or tool actions..."
-                        else
-                            "Disconnected from laptop. Any agent actions are automatically blocked.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = LeashTextSecondary,
-                        modifier = Modifier.padding(horizontal = 32.dp),
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                    )
-
-                    if (sessionContext.tainted) {
-                        Spacer(modifier = Modifier.height(14.dp))
                         Surface(
-                            color = LeashCritical.copy(alpha = 0.15f),
-                            shape = RoundedCornerShape(8.dp),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, LeashCritical.copy(alpha = 0.5f))
+                            color = LeashSurfaceVariant,
+                            shape = CircleShape,
+                            border = androidx.compose.foundation.BorderStroke(
+                                2.dp,
+                                if (connectionState == ConnectionState.CONNECTED) LeashPrimary.copy(alpha = 0.6f) else LeashCritical.copy(alpha = 0.6f)
+                            ),
+                            modifier = Modifier.size(110.dp)
                         ) {
-                            Text(
-                                text = "⚠ Session Tainted: Source ${sessionContext.taintSource ?: "README.md"}",
-                                color = LeashCritical,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                            )
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    imageVector = if (connectionState == ConnectionState.CONNECTED) Icons.Default.Security else Icons.Default.ShieldMoon,
+                                    contentDescription = "Shield Active",
+                                    tint = if (connectionState == ConnectionState.CONNECTED) LeashPrimary else LeashCritical,
+                                    modifier = Modifier.size(54.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(20.dp))
+
+                        Text(
+                            text = if (connectionState == ConnectionState.CONNECTED) "GUARD ACTIVE & MONITORING" else "FAIL-CLOSED ACTIVE",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = Color.White,
+                            letterSpacing = 1.sp
+                        )
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        Text(
+                            text = if (connectionState == ConnectionState.CONNECTED)
+                                "Interception link verified. Waiting for agent shell commands or tool actions..."
+                            else
+                                "Disconnected from laptop. Any agent actions are automatically blocked.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = LeashTextSecondary,
+                            modifier = Modifier.padding(horizontal = 32.dp),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+
+                        if (sessionContext.tainted) {
+                            Spacer(modifier = Modifier.height(14.dp))
+                            Surface(
+                                color = LeashCritical.copy(alpha = 0.15f),
+                                shape = RoundedCornerShape(8.dp),
+                                border = androidx.compose.foundation.BorderStroke(1.dp, LeashCritical.copy(alpha = 0.5f))
+                            ) {
+                                Text(
+                                    text = "⚠ Session Tainted: Source ${sessionContext.taintSource ?: "README.md"}${sessionContext.taintLine?.let { ":$it" } ?: ""}",
+                                    color = LeashCritical,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(28.dp))
+
+                        // Demo sandbox trigger button
+                        OutlinedButton(
+                            onClick = onOpenDemo,
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = LeashCyan),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, LeashCyan.copy(alpha = 0.6f)),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.PlayCircle, contentDescription = "Test", modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Trigger Demo Scenario", fontWeight = FontWeight.Bold)
                         }
                     }
+                }
+            }
+        }
+    }
 
-                    Spacer(modifier = Modifier.height(28.dp))
-
-                    // Demo sandbox trigger button
-                    OutlinedButton(
-                        onClick = onOpenDemo,
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = LeashCyan),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, LeashCyan.copy(alpha = 0.6f)),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Icon(Icons.Default.PlayCircle, contentDescription = "Test", modifier = Modifier.size(18.dp))
+    @Composable
+    private fun BlockedActionBanner(
+        notice: BlockedNotice,
+        onDismiss: () -> Unit,
+        onViewFeed: () -> Unit
+    ) {
+        Surface(
+            color = Color(0xFF2D1215),
+            shape = RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp),
+            border = androidx.compose.foundation.BorderStroke(1.5.dp, LeashCritical.copy(alpha = 0.7f)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+        ) {
+            Column(modifier = Modifier.padding(14.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Block,
+                            contentDescription = "Action Blocked",
+                            tint = LeashCritical,
+                            modifier = Modifier.size(18.dp)
+                        )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Trigger Demo Scenario", fontWeight = FontWeight.Bold)
+                        Text(
+                            text = "BLOCKED BY LEASH (FAIL-CLOSED)",
+                            color = LeashCritical,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 12.sp,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Dismiss notice",
+                            tint = LeashTextSecondary,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                // Blocked Command preview
+                Text(
+                    text = notice.command,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 12.sp,
+                    color = Color(0xFFFF8A80),
+                    maxLines = 1
+                )
+
+                Spacer(modifier = Modifier.height(4.dp))
+
+                Text(
+                    text = "Reason: ${notice.reason} (${notice.decidedBy.name})",
+                    fontSize = 11.sp,
+                    color = LeashTextPrimary
+                )
+
+                Spacer(modifier = Modifier.height(2.dp))
+
+                Text(
+                    text = "Agent feedback sent: \"blocked by Leash: ${notice.reason}\"",
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = LeashTextMuted
+                )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(
+                        onClick = onViewFeed,
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
+                    ) {
+                        Text("View in Audit Feed", color = LeashCyan, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -426,16 +582,54 @@ class MainActivity : ComponentActivity() {
 
     private fun triggerHapticAlert(severity: Severity) {
         try {
-            if (severity == Severity.HIGH || severity == Severity.CRITICAL) {
-                val timings = longArrayOf(0, 200, 100, 300, 100, 400)
-                vibrator.vibrate(VibrationEffect.createWaveform(timings, -1))
-            } else if (severity == Severity.MEDIUM) {
-                val timings = longArrayOf(0, 120, 80, 120)
-                vibrator.vibrate(VibrationEffect.createWaveform(timings, -1))
+            if (vibrator.hasVibrator()) {
+                if (severity == Severity.HIGH || severity == Severity.CRITICAL) {
+                    // Urgent triple-pulse waveform with assertive amplitudes
+                    val timings = longArrayOf(0, 180, 80, 260, 80, 380)
+                    val amplitudes = intArrayOf(0, 200, 0, 240, 0, 255)
+                    if (vibrator.hasAmplitudeControl()) {
+                        vibrator.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1))
+                    } else {
+                        vibrator.vibrate(VibrationEffect.createWaveform(timings, -1))
+                    }
+                } else if (severity == Severity.MEDIUM) {
+                    // Distinct double-pulse nudge with moderate amplitude
+                    val timings = longArrayOf(0, 100, 70, 100)
+                    val amplitudes = intArrayOf(0, 140, 0, 140)
+                    if (vibrator.hasAmplitudeControl()) {
+                        vibrator.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1))
+                    } else {
+                        vibrator.vibrate(VibrationEffect.createWaveform(timings, -1))
+                    }
+                }
             }
         } catch (e: Exception) {
             // Devices without vibrator service support ignore
         }
+    }
+
+    private fun triggerBlockedHaptic() {
+        try {
+            if (vibrator.hasVibrator()) {
+                // Assertive denial feedback pulse
+                val timings = longArrayOf(0, 250, 100, 250)
+                val amplitudes = intArrayOf(0, 255, 0, 180)
+                if (vibrator.hasAmplitudeControl()) {
+                    vibrator.vibrate(VibrationEffect.createWaveform(timings, amplitudes, -1))
+                } else {
+                    vibrator.vibrate(VibrationEffect.createWaveform(timings, -1))
+                }
+            }
+        } catch (e: Exception) {}
+    }
+
+    private fun triggerApprovedHaptic() {
+        try {
+            if (vibrator.hasVibrator()) {
+                // Crisp confirmation click
+                vibrator.vibrate(VibrationEffect.createOneShot(50, 120))
+            }
+        } catch (e: Exception) {}
     }
 
     private fun authenticateBiometric(bundle: ActionBundle) {
@@ -443,32 +637,44 @@ class MainActivity : ComponentActivity() {
         val prompt = BiometricPrompt(this, executor, object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                 client.approveAction(bundle, DecidedBy.BIOMETRIC)
+                triggerApprovedHaptic()
                 Toast.makeText(this@MainActivity, "Approved via Biometric Fingerprint", Toast.LENGTH_SHORT).show()
             }
 
             override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                // If biometric fails or hardware unavailable on emulator, provide fast fallback
-                Toast.makeText(this@MainActivity, "Biometric Auth: $errString", Toast.LENGTH_SHORT).show()
+                // If user clicks negative button ("Use Tap Fallback") or hardware is unavailable
+                if (errorCode == BiometricPrompt.ERROR_NEGATIVE_BUTTON ||
+                    errorCode == BiometricPrompt.ERROR_HW_UNAVAILABLE ||
+                    errorCode == BiometricPrompt.ERROR_HW_NOT_PRESENT ||
+                    errorCode == BiometricPrompt.ERROR_NO_BIOMETRICS
+                ) {
+                    client.approveAction(bundle, DecidedBy.TAP)
+                    triggerApprovedHaptic()
+                    Toast.makeText(this@MainActivity, "Approved via Tap Fallback", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this@MainActivity, "Biometric: $errString (Tap Fallback Available)", Toast.LENGTH_SHORT).show()
+                }
             }
 
             override fun onAuthenticationFailed() {
-                Toast.makeText(this@MainActivity, "Fingerprint not recognized", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, "Fingerprint not recognized. Retry or use Tap Fallback.", Toast.LENGTH_SHORT).show()
             }
         })
 
         val promptInfo = BiometricPrompt.PromptInfo.Builder()
             .setTitle("Confirm High-Risk Action")
-            .setSubtitle(bundle.assessment.summary)
-            .setDescription("Fingerprint verification required for ${bundle.assessment.severity.name} severity")
-            .setNegativeButtonText("Cancel")
+            .setSubtitle("${bundle.assessment.severity.name}: ${bundle.assessment.category}")
+            .setDescription(bundle.assessment.summary)
+            .setNegativeButtonText("Use Tap Fallback")
             .build()
 
         try {
             prompt.authenticate(promptInfo)
         } catch (e: Exception) {
-            // Fallback to tap if biometric hardware unavailable on emulator
+            // Immediate tap fallback if biometric manager is not accessible (e.g. basic emulator)
             client.approveAction(bundle, DecidedBy.TAP)
-            Toast.makeText(this, "Approved (Fallback Tap)", Toast.LENGTH_SHORT).show()
+            triggerApprovedHaptic()
+            Toast.makeText(this, "Approved via Tap Fallback", Toast.LENGTH_SHORT).show()
         }
     }
 

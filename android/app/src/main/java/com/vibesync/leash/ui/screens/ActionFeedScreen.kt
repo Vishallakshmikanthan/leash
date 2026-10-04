@@ -224,10 +224,10 @@ fun FeedItemRow(item: AuditFeedItem) {
                         .padding(10.dp)
                 ) {
                     Text(
-                        text = "Decided By: ${decision.by.name}",
+                        text = "Decided By: ${decision.by.name}${if (decision.by == com.vibesync.leash.data.model.DecidedBy.TIMEOUT) " (Fail-Closed Default)" else ""}",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Medium,
-                        color = LeashCyan
+                        color = if (decision.by == com.vibesync.leash.data.model.DecidedBy.TIMEOUT) LeashWarning else LeashCyan
                     )
                     decision.note?.let {
                         Text(
@@ -238,10 +238,31 @@ fun FeedItemRow(item: AuditFeedItem) {
                     }
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
+                        text = "Category: ${assessment.category}",
+                        fontSize = 11.sp,
+                        color = LeashPurple,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Text(
+                        text = "Agent: ${req.agent} | Worktree: ${req.worktree ?: "default"}",
+                        fontSize = 11.sp,
+                        color = LeashTextSecondary,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
                         text = "Why: ${assessment.why}",
                         fontSize = 11.sp,
                         color = LeashTextSecondary
                     )
+                    if (assessment.safer_alternative.isNotBlank() && assessment.safer_alternative != "None required.") {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Alternative: ${assessment.safer_alternative}",
+                            fontSize = 11.sp,
+                            color = LeashCyan
+                        )
+                    }
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = "Action ID: ${req.id}",
