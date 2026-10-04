@@ -113,6 +113,16 @@ class SessionManager:
             return [s for s in self.sessions.values() if s.state == SessionState.ACTIVE]
         return list(self.sessions.values())
 
+    def plant_canary_in_session(self, session_id: str) -> Optional[Path]:
+        """Plants a harmless fake canary credential file into the session worktree."""
+        from gates.secret_fence import CanaryManager
+        session = self.sessions.get(session_id)
+        if not session or not session.worktree_path:
+            return None
+        mgr = CanaryManager()
+        return mgr.plant_canary_env(Path(session.worktree_path))
+
+
     def bind_action(self, request: ActionRequest) -> ActionRequest:
         """Associates an ActionRequest with its session, agent, and worktree; checks scope and runaway."""
         # 1. Resolve session

@@ -14,52 +14,20 @@ from typing import Any, Dict, List, Optional
 from contracts.models import AuditEvent, ExecutionResult
 
 
-# ---------------------------------------------------------------------------
-# Privacy-Preserving Redaction Patterns (No Cloud Dependency)
-# ---------------------------------------------------------------------------
+from gates.secret_fence import SecretRedactor
 
-REDACTION_PATTERNS = [
-    # AWS Access Key ID
-    (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED_AWS_KEY]"),
-    # AWS Secret Access Key or similar 40-char base64
-    (
-        re.compile(
-            r"(?i)(?:aws_secret_access_key|aws_secret|secret_key)[\s:=]+['\"]?([A-Za-z0-9/+=]{40})['\"]?"
-        ),
-        "[REDACTED_AWS_SECRET]",
-    ),
-    # GitHub Personal Access Tokens
-    (re.compile(r"gh[pousr]_[A-Za-z0-9_]{36,255}"), "[REDACTED_GITHUB_TOKEN]"),
-    (re.compile(r"github_pat_[A-Za-z0-9_]{60,255}"), "[REDACTED_GITHUB_PAT]"),
-    # Bearer & Auth Headers
-    (re.compile(r"(?i)bearer\s+[A-Za-z0-9\-_.~+/]+=*"), "Bearer [REDACTED_TOKEN]"),
-    # Generic API Keys / passwords in commands
-    (
-        re.compile(
-            r"(?i)(?:api[_-]?key|auth[_-]?token|password|passwd|secret)[\s:=]+['\"]?([A-Za-z0-9\-_.~]{16,})['\"]?"
-        ),
-        "[REDACTED_CREDENTIAL]",
-    ),
-    # Private SSH / RSA / EC Keys
-    (
-        re.compile(
-            r"-----BEGIN\s+(?:RSA\s+|OPENSSH\s+|DSA\s+|EC\s+)?PRIVATE\s+KEY-----[\s\S]*?-----END\s+(?:RSA\s+|OPENSSH\s+|DSA\s+|EC\s+)?PRIVATE\s+KEY-----"
-        ),
-        "[REDACTED_PRIVATE_KEY]",
-    ),
-]
+_GLOBAL_REDACTOR = SecretRedactor()
 
 
 def sanitize_text(text: Optional[str], max_len: int = 1000) -> Optional[str]:
-    """Lightweight privacy scrubber removing secrets and truncating long output."""
+    """Lightweight privacy scrubber removing secrets, canaries, and truncating long output."""
     if not text:
         return text
-    clean = text
-    for pattern, replacement in REDACTION_PATTERNS:
-        clean = pattern.sub(replacement, clean)
+    clean = _GLOBAL_REDACTOR.redact(text)
     if len(clean) > max_len:
         clean = clean[:max_len] + "... [TRUNCATED]"
     return clean
+
 
 
 class AuditLogger:
@@ -205,6 +173,42 @@ class AuditLogger:
         )
         self.log(event)
         return event
+
+    def record_canary_alert(
+        self,
+        session_id: str,
+        action_id: str,
+        target_or_command: str,
+        canary_token_or_file: str,
+        agent: Optional[str] = None,
+        worktree: Optional[str] = None,
+    ) -> AuditEvent:
+        """Records an immediate critical security alert when a canary credential is accessed or exposed."""
+        event = AuditEvent(
+            event_id=f"evt_canary_{int(time.time()*1000)}",
+            session_id=session_id,
+            ts=int(time.time()),
+            event_type="canary_security_alert",
+            action_id=action_id,
+            kind="canary_alert",
+            command=sanitize_text(target_or_command, max_len=500),
+            target_path=sanitize_text(canary_token_or_file, max_len=500),
+            risk_severity="critical",
+            risk_category="canary-touched",
+            verdict="deny",
+            decided_by="canary_fence",
+            agent=agent or "unknown",
+            worktree=worktree,
+            tainted=True,
+            metadata={
+                "alert": "CANARY_CREDENTIAL_ACCESSED",
+                "canary": sanitize_text(canary_token_or_file, max_len=100),
+                "action": sanitize_text(target_or_command, max_len=200),
+            },
+        )
+        self.log(event)
+        return event
+
 
     def read_session_events(self, session_id: str) -> List[Dict[str, Any]]:
         """Reads raw audit events recorded for a given session."""

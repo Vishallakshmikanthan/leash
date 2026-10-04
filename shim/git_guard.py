@@ -14,7 +14,7 @@ from shim.shell_wrapper import ShellShim
 class GitGuard:
     """Specialized wrapper around git CLI preventing accidental history rewrites or leaks."""
 
-    DANGEROUS_SUBCOMMANDS = {"push", "reset", "clean", "checkout", "rebase"}
+    DANGEROUS_SUBCOMMANDS = {"push", "commit", "reset", "clean", "checkout", "rebase"}
 
     def __init__(self, shim: ShellShim):
         self.shim = shim

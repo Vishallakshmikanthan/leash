@@ -352,23 +352,36 @@ class SecretExposureRule(BaseRule):
     """Detects reads or exposure of .env, ssh keys, cloud credentials, or inline secret tokens."""
 
     SECRET_PATHS = [
-        re.compile(r"(^|/|\b)\.env(\.[a-zA-Z0-9_-]+)?(\b|$)", re.IGNORECASE),
-        re.compile(r"(^|/|\b)\.ssh/(id_rsa|id_ed25519|id_ecdsa|id_dsa|authorized_keys|known_hosts|config)(\b|$)", re.IGNORECASE),
-        re.compile(r"(^|/|\b)\.aws/(credentials|config)(\b|$)", re.IGNORECASE),
-        re.compile(r"(^|/|\b)\.config/gcloud/(\b|$)", re.IGNORECASE),
-        re.compile(r"(^|/|\b)\.kube/config(\b|$)", re.IGNORECASE),
-        re.compile(r"(^|/|\b)\.netrc(\b|$)", re.IGNORECASE),
-        re.compile(r"(^|/|\b)\.dockercfg|\.docker/config\.json(\b|$)", re.IGNORECASE),
-        re.compile(r"(^|/|\b)canary[-_]?secret.*(\b|$)", re.IGNORECASE),
+        re.compile(r"(^|/|\\)\.env(\.[a-zA-Z0-9_-]+)?(\b|$)", re.IGNORECASE),
+        re.compile(r"(^|/|\\)\.envrc(\b|$)", re.IGNORECASE),
+        re.compile(r"(^|/|\\)\.environment(\b|$)", re.IGNORECASE),
+        re.compile(r"(^|/|\\)\.ssh[/\\](id_rsa|id_ed25519|id_ecdsa|id_dsa|authorized_keys|known_hosts|config)(\b|$)", re.IGNORECASE),
+        re.compile(r"(^|/|\\)\.aws[/\\](credentials|config)(\b|$)", re.IGNORECASE),
+        re.compile(r"(^|/|\\)\.config[/\\]gcloud[/\\](credentials\.db|application_default_credentials\.json|legacy_credentials)(\b|$)", re.IGNORECASE),
+        re.compile(r"(^|/|\\)\.azure[/\\](credentials|azureProfile\.json|accessTokens\.json)(\b|$)", re.IGNORECASE),
+        re.compile(r"(^|/|\\)\.kube[/\\](config|credentials)(\b|$)", re.IGNORECASE),
+        re.compile(r"(^|/|\\)\.?netrc(\b|$)", re.IGNORECASE),
+        re.compile(r"(^|/|\\)(\.dockercfg|\.docker[/\\]config\.json)(\b|$)", re.IGNORECASE),
+        re.compile(r"(^|/|\\)\.git-credentials(\b|$)", re.IGNORECASE),
+        re.compile(r"(^|/|\\)\.npmrc(\b|$)", re.IGNORECASE),
+        re.compile(r"(^|/|\\)\.pypirc(\b|$)", re.IGNORECASE),
+        re.compile(r"(^|/|\\)\.cargo[/\\]credentials(\.toml)?(\b|$)", re.IGNORECASE),
+        re.compile(r".*\.(pem|pkcs12|pfx|key|keystore)$", re.IGNORECASE),
+        re.compile(r"(^|/|\\)canary[-_]?secret.*(\b|$)", re.IGNORECASE),
     ]
 
     INLINE_SECRET_PATTERNS = [
-        ("AWS Key", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
-        ("GitHub Token", re.compile(r"\b(ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{82})\b")),
+        ("AWS Key", re.compile(r"\b(AKIA|ASIA)[0-9A-Z]{16}\b")),
+        ("GitHub Token", re.compile(r"\b(gh[pousr]_[a-zA-Z0-9_]{36,255}|github_pat_[a-zA-Z0-9_]{60,255})\b")),
         ("OpenAI Key", re.compile(r"\bsk-[a-zA-Z0-9]{20,}\b")),
+        ("Anthropic Key", re.compile(r"\bsk-ant-[a-zA-Z0-9_-]{20,}\b")),
+        ("Google API Key", re.compile(r"\bAIza[0-9A-Za-z-_]{35}\b")),
+        ("Slack Token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b")),
+        ("Stripe Key", re.compile(r"\b[sr]k_(?:test|live)_[0-9a-zA-Z]{24,}\b")),
         ("Private Key Header", re.compile(r"-----BEGIN (RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")),
-        ("Canary Token", re.compile(r"\b(CANARY_KEY|LEASH_CANARY_TOKEN)\b", re.IGNORECASE)),
+        ("Canary Token", re.compile(r"\b(CANARY_KEY|LEASH_CANARY_[A-Za-z0-9_-]+|canary_secret[A-Za-z0-9_-]*)\b", re.IGNORECASE)),
     ]
+
 
     @property
     def rule_id(self) -> str:

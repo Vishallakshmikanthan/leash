@@ -26,6 +26,7 @@ from contracts.models import (
 )
 from daemon.policy_evaluator import PolicyEvaluator
 from daemon.server import LeashDaemonServer
+from gates.secret_fence import SecretRedactor
 
 
 class ShellShim:
@@ -43,6 +44,8 @@ class ShellShim:
         self.daemon_url = daemon_url or os.environ.get("LEASH_DAEMON_URL", "http://127.0.0.1:8765")
         self.agent_name = agent_name or os.environ.get("LEASH_AGENT_NAME", "coding-agent")
         self._local_evaluator = PolicyEvaluator()
+        self._redactor = SecretRedactor()
+
 
     def _build_request(self, command: str, cwd: Optional[str] = None) -> ActionRequest:
         return ActionRequest(
@@ -148,11 +151,12 @@ class ShellShim:
                     verdict=Verdict.ALLOW,
                     allowed=True,
                     exit_code=proc.returncode,
-                    stdout=proc.stdout,
-                    stderr=proc.stderr,
+                    stdout=self._redactor.redact(proc.stdout),
+                    stderr=self._redactor.redact(proc.stderr),
                     risk_assessment=assessment,
                     duration_ms=(time.time() - start_time) * 1000,
                 )
+
             except Exception as ex:
                 return CommandResult(
                     action_id=request.id,

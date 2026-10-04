@@ -21,14 +21,18 @@ from contracts.models import (
     DecidedBy,
     Decision,
     ProvenanceEvent,
+    ProvenanceKind,
     RiskAssessment,
     Severity,
     Verdict,
 )
+
 from daemon.audit_logger import AuditLogger
 from daemon.config import DaemonConfig
 from daemon.policy_evaluator import PolicyEvaluator
+from gates.secret_fence import CanaryManager, SecretRedactor
 from session.manager import SessionManager
+
 
 logger = logging.getLogger("leash.daemon")
 
@@ -61,6 +65,8 @@ class LeashDaemonServer:
         self.evaluator = policy_evaluator or PolicyEvaluator(config.allow_command_patterns)
         self.signer = LeashSigner(config.shared_secret)
         self.local_decider = local_decider
+        self.canary_mgr = CanaryManager()
+        self.redactor = SecretRedactor(custom_canary_tokens=set(self.canary_mgr.registered_canaries.keys()))
 
         # Active phone client connections (WebSocket)
         self.connected_clients: Set[web.WebSocketResponse] = set()
@@ -870,6 +876,42 @@ class LeashDaemonServer:
         # 3. Evaluate risk assessment
         assessment = self.evaluator.evaluate(request)
 
+        # Immediate Canary Alert handling
+        if assessment.category == "canary-touched" or "R-SECRET-CANARY" in assessment.rule_ids:
+            canary_target = request.target_path or request.command or "canary_secret"
+            self.audit_logger.record_canary_alert(
+                session_id=request.session,
+                action_id=request.id,
+                target_or_command=request.command or request.target_path or "",
+                canary_token_or_file=canary_target,
+                agent=request.agent,
+                worktree=request.worktree,
+            )
+            p_canary = ProvenanceEvent(
+                id=f"p_canary_{uuid.uuid4().hex[:8]}",
+                session=request.session,
+                ts=int(time.time()),
+                kind=ProvenanceKind.CANARY_READ,
+                source=canary_target,
+                line=1,
+                flags=["canary-breach", "security-alert"],
+                snippet=f"Canary credential breached: {canary_target}",
+            )
+            self.session_mgr.record_provenance_event(p_canary)
+            asyncio.create_task(
+                self.broadcast_to_phone(
+                    "canary_alert",
+                    {
+                        "action_id": request.id,
+                        "session_id": request.session,
+                        "target": canary_target,
+                        "summary": assessment.summary,
+                        "why": assessment.why,
+                        "severity": "critical",
+                    },
+                )
+            )
+
         # 4. Low risk permitted automatically if clean
         if assessment.severity == Severity.LOW and not taint.tainted and self.config.auto_allow_low_risk:
             latency = (time.time() - start_time) * 1000
@@ -967,12 +1009,18 @@ class LeashDaemonServer:
             "snapshot_ref": snapshot_ref,
         }
 
-        # Broadcast to connected Phone Guard
+        # Broadcast to connected Phone Guard (sanitizing approval card to prevent leaking raw secrets)
+        clean_req = request.to_dict()
+        if clean_req.get("command"):
+            clean_req["command"] = self.redactor.redact(clean_req["command"])
+        if clean_req.get("target_path"):
+            clean_req["target_path"] = self.redactor.redact(clean_req["target_path"])
         payload = {
-            "request": request.to_dict(),
+            "request": clean_req,
             "assessment": assessment.to_dict(),
         }
         await self.broadcast_to_phone("action_request", payload)
+
 
         # Trigger programmatic local decider if registered
         if self.local_decider is not None:
@@ -1062,12 +1110,15 @@ class LeashDaemonServer:
                 )
                 stdout_bytes, stderr_bytes = await proc.communicate()
                 exit_code = proc.returncode if proc.returncode is not None else 0
-                stdout_str = stdout_bytes.decode("utf-8", errors="replace")
-                stderr_str = stderr_bytes.decode("utf-8", errors="replace")
+                raw_stdout = stdout_bytes.decode("utf-8", errors="replace")
+                raw_stderr = stderr_bytes.decode("utf-8", errors="replace")
+                stdout_str = self.redactor.redact(raw_stdout)
+                stderr_str = self.redactor.redact(raw_stderr)
             except Exception as e:
                 exit_code = 1
                 stdout_str = ""
-                stderr_str = f"Execution error: {e}"
+                stderr_str = self.redactor.redact(f"Execution error: {e}")
+
 
             duration_ms = (time.time() - start_time) * 1000
             cmd_result = CommandResult(
