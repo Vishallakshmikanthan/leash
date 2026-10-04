@@ -19,10 +19,14 @@
     "risk_category": { "type": ["string", "null"] },
     "verdict": { "type": "string" },
     "decided_by": { "type": "string" },
+    "agent": { "type": ["string", "null"] },
+    "worktree": { "type": ["string", "null"] },
+    "risk_assessment": { "type": ["object", "null"] },
+    "execution_result": { "type": ["object", "null"] },
     "latency_ms": { "type": ["number", "null"] },
     "snapshot_ref": { "type": ["string", "null"] },
     "tainted": { "type": "boolean" },
     "metadata": { "type": "object" }
   },
-  "additionalProperties": false
+  "additionalProperties": true
 }

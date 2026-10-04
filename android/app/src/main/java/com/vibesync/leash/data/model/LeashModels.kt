@@ -171,12 +171,87 @@ data class PairingBundle(
 )
 
 @Serializable
+data class ExecutionResultModel(
+    val allowed: Boolean = true,
+    val exit_code: Int = 0,
+    val duration_ms: Double = 0.0,
+    val stdout_snippet: String? = null,
+    val stderr_snippet: String? = null,
+    val blocked_reason: String? = null
+)
+
+@Serializable
+data class AuditEventModel(
+    val event_id: String,
+    val session_id: String,
+    val ts: Long,
+    val event_type: String = "action_evaluated",
+    val action_id: String,
+    val kind: String = "shell",
+    val command: String? = null,
+    val target_path: String? = null,
+    val risk_severity: String = "low",
+    val risk_category: String? = null,
+    val verdict: String = "allow",
+    val decided_by: String = "auto",
+    val agent: String? = null,
+    val worktree: String? = null,
+    val risk_assessment: RiskAssessment? = null,
+    val execution_result: ExecutionResultModel? = null,
+    val latency_ms: Double? = null,
+    val snapshot_ref: String? = null,
+    val tainted: Boolean = false
+)
+
+@Serializable
+data class SessionActivityItem(
+    val action_id: String,
+    val ts: Long,
+    val timestamp_iso: String = "",
+    val kind: String = "shell",
+    val command: String = "",
+    val target_path: String? = null,
+    val agent: String = "unknown",
+    val worktree: String? = null,
+    val verdict: String = "allow",
+    val decision_method: String = "auto",
+    val risk_severity: String = "low",
+    val risk_category: String = "general",
+    val risk_summary: String = "",
+    val why: String = "",
+    val safer_alternative: String? = null,
+    val rule_ids: List<String> = emptyList(),
+    val tainted: Boolean = false,
+    val taint_source: String? = null,
+    val taint_line: Int? = null,
+    val snapshot_ref: String? = null,
+    val latency_ms: Double = 0.0,
+    val execution_result: ExecutionResultModel? = null
+)
+
+@Serializable
+data class SessionSummary(
+    val session_id: String,
+    val agent: String = "unknown",
+    val worktree: String? = null,
+    val tainted: Boolean = false,
+    val total_actions: Int = 0,
+    val allowed_count: Int = 0,
+    val blocked_count: Int = 0,
+    val tainted_count: Int = 0,
+    val decisions_by_method: Map<String, Int> = emptyMap(),
+    val severity_breakdown: Map<String, Int> = emptyMap(),
+    val timeline: List<SessionActivityItem> = emptyList()
+)
+
+@Serializable
 data class AuditFeedItem(
     val id: String,
     val bundle: ActionBundle,
     val decision: Decision,
     val latencyMs: Long = 0,
-    val timestamp: Long = System.currentTimeMillis()
+    val timestamp: Long = System.currentTimeMillis(),
+    val executionResult: ExecutionResultModel? = null
 )
 
 @Serializable

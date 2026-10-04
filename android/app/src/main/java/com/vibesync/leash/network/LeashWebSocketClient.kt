@@ -1,9 +1,11 @@
 package com.vibesync.leash.network
 
+import android.content.Context
 import android.net.Uri
 import android.util.Log
 import com.vibesync.leash.data.crypto.LeashCrypto
 import com.vibesync.leash.data.model.*
+import com.vibesync.leash.data.repository.AuditRepository
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -23,8 +25,11 @@ class LeashWebSocketClient(
     var port: Int = 8765,
     var sharedSecret: String = "leash-dev-secret-change-me",
     val deviceId: String = "android_guard_01",
-    val deviceName: String = "Android Guard"
+    val deviceName: String = "Android Guard",
+    context: Context? = null
 ) {
+    val repository = AuditRepository(context)
+
     private val client = OkHttpClient.Builder()
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .connectTimeout(5, TimeUnit.SECONDS)
@@ -58,6 +63,10 @@ class LeashWebSocketClient(
     private val _actionHistory = MutableStateFlow<List<AuditFeedItem>>(emptyList())
     val actionHistory: StateFlow<List<AuditFeedItem>> = _actionHistory.asStateFlow()
 
+    // Structured Session Activity & Decision Timeline
+    private val _sessionActivity = MutableStateFlow<SessionSummary?>(null)
+    val sessionActivity: StateFlow<SessionSummary?> = _sessionActivity.asStateFlow()
+
     // Session Context & Taint State
     private val _sessionContext = MutableStateFlow(SessionContext(sessionId = "s_default"))
     val sessionContext: StateFlow<SessionContext> = _sessionContext.asStateFlow()
@@ -69,6 +78,30 @@ class LeashWebSocketClient(
     // Last Blocked Action Notice (for active blocked-action feedback)
     private val _lastBlockedNotice = MutableStateFlow<BlockedNotice?>(null)
     val lastBlockedNotice: StateFlow<BlockedNotice?> = _lastBlockedNotice.asStateFlow()
+
+    init {
+        // Load persistent audit history and session summary on startup
+        try {
+            val initialSession = _sessionContext.value.sessionId
+            val persisted = repository.loadFeedItems(initialSession)
+            if (persisted.isNotEmpty()) {
+                _actionHistory.value = persisted
+                val approved = persisted.count { it.decision.verdict == Verdict.ALLOW }
+                val denied = persisted.count { it.decision.verdict == Verdict.DENY }
+                _guardStats.value = _guardStats.value.copy(
+                    totalIntercepted = persisted.size,
+                    approvedCount = approved,
+                    deniedCount = denied
+                )
+            }
+            val summary = repository.loadSessionSummary(initialSession)
+            if (summary != null) {
+                _sessionActivity.value = summary
+            }
+        } catch (e: Exception) {
+            Log.w("LeashClient", "Error initializing audit repository: ${e.message}")
+        }
+    }
 
     fun clearBlockedNotice() {
         _lastBlockedNotice.value = null
@@ -156,13 +189,98 @@ class LeashWebSocketClient(
                     _connectionState.value = ConnectionState.CONNECTED
                     if (ack.session_id.isNotEmpty()) {
                         _sessionContext.value = _sessionContext.value.copy(sessionId = ack.session_id)
+                        val persisted = repository.loadFeedItems(ack.session_id)
+                        if (persisted.isNotEmpty()) {
+                            _actionHistory.value = persisted
+                        }
                     }
                     startHeartbeat(ws)
+                    requestSessionActivity(ack.session_id.ifEmpty { _sessionContext.value.sessionId })
                 }
                 "auth_error" -> {
                     Log.e("LeashClient", "Daemon rejected authentication: $payloadStr")
                     _connectionState.value = ConnectionState.DISCONNECTED
                     ws.close(4001, "Auth rejected")
+                }
+                "execution_result" -> {
+                    try {
+                        val result = json.decodeFromString<ExecutionResultModel>(payloadStr)
+                        val actionId = root["payload"]?.jsonObject?.get("action_id")?.jsonPrimitive?.content ?: ""
+                        if (actionId.isNotEmpty()) {
+                            repository.updateExecutionResult(actionId, result)
+                            _actionHistory.value = _actionHistory.value.map { item ->
+                                if (item.bundle.request.id == actionId) {
+                                    item.copy(executionResult = result)
+                                } else item
+                            }
+                            val cur = _sessionActivity.value
+                            if (cur != null) {
+                                val updatedTimeline = cur.timeline.map { tItem ->
+                                    if (tItem.action_id == actionId) {
+                                        tItem.copy(execution_result = result)
+                                    } else tItem
+                                }
+                                val updatedSummary = cur.copy(timeline = updatedTimeline)
+                                _sessionActivity.value = updatedSummary
+                                repository.saveSessionSummary(updatedSummary)
+                            }
+                        }
+                    } catch (e: Exception) {
+                        Log.e("LeashClient", "Error handling execution_result: $payloadStr", e)
+                    }
+                }
+                "audit_history" -> {
+                    try {
+                        val summary = json.decodeFromString<SessionSummary>(payloadStr)
+                        _sessionActivity.value = summary
+                        repository.saveSessionSummary(summary)
+                        Log.i("LeashClient", "Received session audit history with ${summary.total_actions} actions")
+                    } catch (e: Exception) {
+                        Log.e("LeashClient", "Error decoding audit_history: $payloadStr", e)
+                    }
+                }
+                "audit_event" -> {
+                    try {
+                        val event = json.decodeFromString<AuditEventModel>(payloadStr)
+                        val cur = _sessionActivity.value
+                        if (cur != null && cur.session_id == event.session_id) {
+                            val newItem = SessionActivityItem(
+                                action_id = event.action_id,
+                                ts = event.ts,
+                                timestamp_iso = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US).format(java.util.Date(event.ts * 1000)),
+                                kind = event.kind,
+                                command = event.command ?: event.target_path ?: "-",
+                                target_path = event.target_path,
+                                agent = event.agent ?: cur.agent,
+                                worktree = event.worktree ?: cur.worktree,
+                                verdict = event.verdict,
+                                decision_method = event.decided_by,
+                                risk_severity = event.risk_severity,
+                                risk_category = event.risk_category ?: "general",
+                                risk_summary = event.risk_assessment?.summary ?: event.risk_category ?: "Evaluated action",
+                                why = event.risk_assessment?.why ?: "Policy evaluation",
+                                safer_alternative = event.risk_assessment?.safer_alternative,
+                                rule_ids = event.risk_assessment?.rule_ids ?: emptyList(),
+                                tainted = event.tainted,
+                                taint_source = event.risk_assessment?.taint_source,
+                                taint_line = event.risk_assessment?.taint_line,
+                                snapshot_ref = event.snapshot_ref,
+                                latency_ms = event.latency_ms ?: 0.0,
+                                execution_result = event.execution_result
+                            )
+                            val timeline = (cur.timeline.filter { it.action_id != event.action_id } + newItem).sortedByDescending { it.ts }
+                            val updatedSummary = cur.copy(
+                                total_actions = timeline.size,
+                                allowed_count = timeline.count { it.verdict == "allow" },
+                                blocked_count = timeline.count { it.verdict == "deny" },
+                                timeline = timeline
+                            )
+                            _sessionActivity.value = updatedSummary
+                            repository.saveSessionSummary(updatedSummary)
+                        }
+                    } catch (e: Exception) {
+                        Log.e("LeashClient", "Error decoding audit_event: $payloadStr", e)
+                    }
                 }
                 "action_request" -> {
                     val bundle = json.decodeFromString<ActionBundle>(payloadStr)
@@ -334,6 +452,7 @@ class LeashWebSocketClient(
             timestamp = System.currentTimeMillis()
         )
         _actionHistory.value = listOf(feedItem) + _actionHistory.value
+        repository.saveFeedItem(feedItem)
 
         // Update stats
         _guardStats.value = _guardStats.value.copy(
@@ -538,6 +657,7 @@ class LeashWebSocketClient(
                 timestamp = System.currentTimeMillis()
             )
             _actionHistory.value = listOf(feedItem) + _actionHistory.value
+            repository.saveFeedItem(feedItem)
             _guardStats.value = _guardStats.value.copy(
                 totalIntercepted = _guardStats.value.totalIntercepted + 1,
                 approvedCount = _guardStats.value.approvedCount + 1
@@ -556,6 +676,33 @@ class LeashWebSocketClient(
                     taintSource = actionReq.taint.source,
                     taintLine = actionReq.taint.line
                 )
+            }
+        }
+    }
+
+    fun requestSessionActivity(sessionId: String = _sessionContext.value.sessionId) {
+        val ws = webSocket
+        if (ws != null && _connectionState.value == ConnectionState.CONNECTED) {
+            val reqMsg = """{"type":"get_audit_history","payload":{"session_id":"$sessionId"}}"""
+            ws.send(reqMsg)
+        }
+        scope.launch {
+            try {
+                val httpReq = Request.Builder()
+                    .url("http://$host:$port/sessions/$sessionId/activity")
+                    .build()
+                client.newCall(httpReq).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val body = response.body?.string()
+                        if (!body.isNullOrBlank()) {
+                            val summary = json.decodeFromString<SessionSummary>(body)
+                            _sessionActivity.value = summary
+                            repository.saveSessionSummary(summary)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("LeashClient", "HTTP fallback for audit history failed: ${e.message}")
             }
         }
     }

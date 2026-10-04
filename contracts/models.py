@@ -331,6 +331,30 @@ class SessionScope:
 
 
 @dataclass
+class ExecutionResult:
+    allowed: bool
+    exit_code: int
+    duration_ms: float = 0.0
+    stdout_snippet: Optional[str] = None
+    stderr_snippet: Optional[str] = None
+    blocked_reason: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> ExecutionResult:
+        return cls(
+            allowed=bool(data.get("allowed", False)),
+            exit_code=int(data.get("exit_code", 0)),
+            duration_ms=float(data.get("duration_ms", 0.0)),
+            stdout_snippet=data.get("stdout_snippet"),
+            stderr_snippet=data.get("stderr_snippet"),
+            blocked_reason=data.get("blocked_reason"),
+        )
+
+
+@dataclass
 class AuditEvent:
     event_id: str
     session_id: str
@@ -344,6 +368,10 @@ class AuditEvent:
     command: Optional[str] = None
     target_path: Optional[str] = None
     risk_category: Optional[str] = None
+    agent: Optional[str] = None
+    worktree: Optional[str] = None
+    risk_assessment: Optional[Dict[str, Any]] = None
+    execution_result: Optional[Dict[str, Any]] = None
     latency_ms: Optional[float] = None
     snapshot_ref: Optional[str] = None
     tainted: bool = False
@@ -351,3 +379,29 @@ class AuditEvent:
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> AuditEvent:
+        return cls(
+            event_id=data["event_id"],
+            session_id=data["session_id"],
+            ts=int(data["ts"]),
+            event_type=data.get("event_type", "action_evaluated"),
+            action_id=data.get("action_id", ""),
+            kind=data.get("kind", "shell"),
+            risk_severity=data.get("risk_severity", "low"),
+            verdict=data.get("verdict", "allow"),
+            decided_by=data.get("decided_by", "auto"),
+            command=data.get("command"),
+            target_path=data.get("target_path"),
+            risk_category=data.get("risk_category"),
+            agent=data.get("agent"),
+            worktree=data.get("worktree"),
+            risk_assessment=data.get("risk_assessment"),
+            execution_result=data.get("execution_result"),
+            latency_ms=data.get("latency_ms"),
+            snapshot_ref=data.get("snapshot_ref"),
+            tainted=bool(data.get("tainted", False)),
+            metadata=data.get("metadata", {}),
+        )
+

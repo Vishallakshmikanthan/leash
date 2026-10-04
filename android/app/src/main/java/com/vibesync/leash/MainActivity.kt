@@ -49,7 +49,8 @@ class MainActivity : ComponentActivity() {
         client = LeashWebSocketClient(
             host = "10.0.2.2",
             port = 8765,
-            sharedSecret = "leash-dev-secret-change-me"
+            sharedSecret = "leash-dev-secret-change-me",
+            context = this
         )
         client.connect()
         LeashForegroundService.startService(this)
@@ -64,6 +65,7 @@ class MainActivity : ComponentActivity() {
                 val blockedNotice by client.lastBlockedNotice.collectAsState()
                 val feedItems by client.actionHistory.collectAsState()
                 val sessionContext by client.sessionContext.collectAsState()
+                val sessionActivity by client.sessionActivity.collectAsState()
                 val guardStats by client.guardStats.collectAsState()
 
                 // Haptic feedback listener for incoming actions
@@ -148,6 +150,11 @@ class MainActivity : ComponentActivity() {
                                 SessionInfoScreen(
                                     sessionContext = sessionContext,
                                     guardStats = guardStats,
+                                    sessionActivity = sessionActivity,
+                                    feedItems = feedItems,
+                                    onRefreshActivity = {
+                                        client.requestSessionActivity()
+                                    },
                                     onRewind = { callback ->
                                         client.triggerRewind(callback)
                                     }

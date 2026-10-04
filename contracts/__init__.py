@@ -16,6 +16,7 @@ from contracts.models import (
     SessionScope,
     AuditEvent,
     CommandResult,
+    ExecutionResult,
 )
 from contracts.crypto import LeashSigner
 
@@ -29,6 +30,7 @@ __all__ = [
     "ActionRequest",
     "Decision",
     "CommandResult",
+    "ExecutionResult",
     "RiskAssessment",
     "ProvenanceEvent",
     "SnapshotRef",

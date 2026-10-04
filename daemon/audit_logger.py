@@ -1,19 +1,69 @@
 """
-daemon/audit_logger.py - Append-only JSONL audit logging for Leash sessions.
+daemon/audit_logger.py - Append-only, structured, privacy-preserving JSONL audit logger for Leash sessions.
 """
 from __future__ import annotations
 
+import datetime
 import json
+import re
 import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from contracts.models import AuditEvent
+from contracts.models import AuditEvent, ExecutionResult
+
+
+# ---------------------------------------------------------------------------
+# Privacy-Preserving Redaction Patterns (No Cloud Dependency)
+# ---------------------------------------------------------------------------
+
+REDACTION_PATTERNS = [
+    # AWS Access Key ID
+    (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED_AWS_KEY]"),
+    # AWS Secret Access Key or similar 40-char base64
+    (
+        re.compile(
+            r"(?i)(?:aws_secret_access_key|aws_secret|secret_key)[\s:=]+['\"]?([A-Za-z0-9/+=]{40})['\"]?"
+        ),
+        "[REDACTED_AWS_SECRET]",
+    ),
+    # GitHub Personal Access Tokens
+    (re.compile(r"gh[pousr]_[A-Za-z0-9_]{36,255}"), "[REDACTED_GITHUB_TOKEN]"),
+    (re.compile(r"github_pat_[A-Za-z0-9_]{60,255}"), "[REDACTED_GITHUB_PAT]"),
+    # Bearer & Auth Headers
+    (re.compile(r"(?i)bearer\s+[A-Za-z0-9\-_.~+/]+=*"), "Bearer [REDACTED_TOKEN]"),
+    # Generic API Keys / passwords in commands
+    (
+        re.compile(
+            r"(?i)(?:api[_-]?key|auth[_-]?token|password|passwd|secret)[\s:=]+['\"]?([A-Za-z0-9\-_.~]{16,})['\"]?"
+        ),
+        "[REDACTED_CREDENTIAL]",
+    ),
+    # Private SSH / RSA / EC Keys
+    (
+        re.compile(
+            r"-----BEGIN\s+(?:RSA\s+|OPENSSH\s+|DSA\s+|EC\s+)?PRIVATE\s+KEY-----[\s\S]*?-----END\s+(?:RSA\s+|OPENSSH\s+|DSA\s+|EC\s+)?PRIVATE\s+KEY-----"
+        ),
+        "[REDACTED_PRIVATE_KEY]",
+    ),
+]
+
+
+def sanitize_text(text: Optional[str], max_len: int = 1000) -> Optional[str]:
+    """Lightweight privacy scrubber removing secrets and truncating long output."""
+    if not text:
+        return text
+    clean = text
+    for pattern, replacement in REDACTION_PATTERNS:
+        clean = pattern.sub(replacement, clean)
+    if len(clean) > max_len:
+        clean = clean[:max_len] + "... [TRUNCATED]"
+    return clean
 
 
 class AuditLogger:
-    """Thread-safe append-only audit logger writing to a JSONL file."""
+    """Thread-safe append-only, privacy-preserving audit logger writing to a JSONL file."""
 
     def __init__(self, log_path: Path):
         self.log_path = log_path
@@ -21,7 +71,21 @@ class AuditLogger:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
 
     def log(self, event: AuditEvent) -> None:
-        line = json.dumps(event.to_dict()) + "\n"
+        """Appends an AuditEvent to the JSONL log file with privacy scrubbing."""
+        dict_rep = event.to_dict()
+        # Redact potentially sensitive fields
+        if "command" in dict_rep and dict_rep["command"]:
+            dict_rep["command"] = sanitize_text(dict_rep["command"], max_len=1000)
+        if "target_path" in dict_rep and dict_rep["target_path"]:
+            dict_rep["target_path"] = sanitize_text(dict_rep["target_path"], max_len=500)
+        if "execution_result" in dict_rep and isinstance(dict_rep["execution_result"], dict):
+            res = dict_rep["execution_result"]
+            if "stdout_snippet" in res and res["stdout_snippet"]:
+                res["stdout_snippet"] = sanitize_text(res["stdout_snippet"], max_len=600)
+            if "stderr_snippet" in res and res["stderr_snippet"]:
+                res["stderr_snippet"] = sanitize_text(res["stderr_snippet"], max_len=600)
+
+        line = json.dumps(dict_rep) + "\n"
         with self._lock:
             with open(self.log_path, "a", encoding="utf-8") as f:
                 f.write(line)
@@ -37,11 +101,16 @@ class AuditLogger:
         command: Optional[str] = None,
         target_path: Optional[str] = None,
         risk_category: Optional[str] = None,
+        agent: Optional[str] = None,
+        worktree: Optional[str] = None,
+        risk_assessment: Optional[Dict[str, Any]] = None,
+        execution_result: Optional[Dict[str, Any]] = None,
         latency_ms: Optional[float] = None,
         snapshot_ref: Optional[str] = None,
         tainted: bool = False,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> AuditEvent:
+        """Records an intercepted action with full context and structured risk assessment."""
         event = AuditEvent(
             event_id=f"evt_{int(time.time()*1000)}",
             session_id=session_id,
@@ -49,16 +118,56 @@ class AuditLogger:
             event_type="action_evaluated",
             action_id=action_id,
             kind=kind,
-            command=command,
-            target_path=target_path,
+            command=sanitize_text(command, max_len=1000),
+            target_path=sanitize_text(target_path, max_len=500),
             risk_severity=risk_severity,
             risk_category=risk_category,
             verdict=verdict,
             decided_by=decided_by,
+            agent=agent or "unknown",
+            worktree=worktree,
+            risk_assessment=risk_assessment,
+            execution_result=execution_result,
             latency_ms=latency_ms,
             snapshot_ref=snapshot_ref,
             tainted=tainted,
             metadata=metadata or {},
+        )
+        self.log(event)
+        return event
+
+    def record_execution_result(
+        self,
+        session_id: str,
+        action_id: str,
+        allowed: bool,
+        exit_code: int,
+        duration_ms: float = 0.0,
+        stdout_snippet: Optional[str] = None,
+        stderr_snippet: Optional[str] = None,
+        blocked_reason: Optional[str] = None,
+    ) -> AuditEvent:
+        """Records the execution outcome of an action as a structured execution event."""
+        exec_dict = {
+            "allowed": allowed,
+            "exit_code": exit_code,
+            "duration_ms": duration_ms,
+            "stdout_snippet": sanitize_text(stdout_snippet, max_len=600),
+            "stderr_snippet": sanitize_text(stderr_snippet, max_len=600),
+            "blocked_reason": sanitize_text(blocked_reason, max_len=500),
+        }
+        event = AuditEvent(
+            event_id=f"evt_{int(time.time()*1000)}",
+            session_id=session_id,
+            ts=int(time.time()),
+            event_type="action_executed",
+            action_id=action_id,
+            kind="execution",
+            risk_severity="low" if allowed else "high",
+            verdict="allow" if allowed else "deny",
+            decided_by="execution",
+            execution_result=exec_dict,
+            metadata={"exit_code": exit_code, "duration_ms": duration_ms},
         )
         self.log(event)
         return event
@@ -73,6 +182,8 @@ class AuditLogger:
         risk_severity: str,
         decided_by: str,
         target_path: Optional[str] = None,
+        agent: Optional[str] = None,
+        worktree: Optional[str] = None,
         tainted: bool = False,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> AuditEvent:
@@ -83,10 +194,12 @@ class AuditLogger:
             event_type=event_type,
             action_id=action_id,
             kind=kind,
-            target_path=target_path,
+            target_path=sanitize_text(target_path, max_len=500),
             risk_severity=risk_severity,
             verdict=verdict,
             decided_by=decided_by,
+            agent=agent,
+            worktree=worktree,
             tainted=tainted,
             metadata=metadata or {},
         )
@@ -94,6 +207,7 @@ class AuditLogger:
         return event
 
     def read_session_events(self, session_id: str) -> List[Dict[str, Any]]:
+        """Reads raw audit events recorded for a given session."""
         if not self.log_path.exists():
             return []
         events: List[Dict[str, Any]] = []
@@ -109,3 +223,207 @@ class AuditLogger:
                     except json.JSONDecodeError:
                         continue
         return events
+
+    def read_all_events(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Reads all audit events across all sessions, newest first."""
+        if not self.log_path.exists():
+            return []
+        events: List[Dict[str, Any]] = []
+        with self._lock:
+            with open(self.log_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        events.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        events.reverse()
+        if limit is not None:
+            return events[:limit]
+        return events
+
+    def list_sessions(self) -> List[Dict[str, Any]]:
+        """Returns a list of all distinct sessions with activity overview."""
+        if not self.log_path.exists():
+            return []
+        session_map: Dict[str, Dict[str, Any]] = {}
+        with self._lock:
+            with open(self.log_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        rec = json.loads(line)
+                        s_id = rec.get("session_id")
+                        if not s_id:
+                            continue
+                        if s_id not in session_map:
+                            session_map[s_id] = {
+                                "session_id": s_id,
+                                "agent": rec.get("agent") or "unknown",
+                                "worktree": rec.get("worktree"),
+                                "start_time": rec.get("ts", 0),
+                                "last_activity": rec.get("ts", 0),
+                                "total_actions": 0,
+                                "allowed_count": 0,
+                                "denied_count": 0,
+                                "tainted": False,
+                            }
+                        s_entry = session_map[s_id]
+                        s_entry["last_activity"] = max(s_entry["last_activity"], rec.get("ts", 0))
+                        if rec.get("agent") and rec["agent"] != "unknown":
+                            s_entry["agent"] = rec["agent"]
+                        if rec.get("worktree"):
+                            s_entry["worktree"] = rec["worktree"]
+                        if rec.get("tainted"):
+                            s_entry["tainted"] = True
+
+                        if rec.get("event_type") == "action_evaluated":
+                            s_entry["total_actions"] += 1
+                            if rec.get("verdict") == "allow":
+                                s_entry["allowed_count"] += 1
+                            elif rec.get("verdict") == "deny":
+                                s_entry["denied_count"] += 1
+                    except json.JSONDecodeError:
+                        continue
+
+        sessions = list(session_map.values())
+        sessions.sort(key=lambda s: s["last_activity"], reverse=True)
+        return sessions
+
+    def get_session_activity(self, session_id: str) -> Dict[str, Any]:
+        """
+        Builds a comprehensive, session-level activity view.
+        Explains what the agent attempted, what Leash allowed or blocked, and why.
+        Correlates action evaluation with its execution result.
+        """
+        raw_events = self.read_session_events(session_id)
+        if not raw_events:
+            return {
+                "session_id": session_id,
+                "agent": "unknown",
+                "worktree": None,
+                "total_actions": 0,
+                "allowed_count": 0,
+                "blocked_count": 0,
+                "tainted_count": 0,
+                "decisions_by_method": {},
+                "severity_breakdown": {},
+                "timeline": [],
+            }
+
+        actions: Dict[str, Dict[str, Any]] = {}
+        ordered_action_ids: List[str] = []
+        exec_map: Dict[str, Dict[str, Any]] = {}
+
+        agent_name = "unknown"
+        worktree_path = None
+        tainted_session = False
+
+        for ev in raw_events:
+            if ev.get("agent") and ev["agent"] != "unknown":
+                agent_name = ev["agent"]
+            if ev.get("worktree"):
+                worktree_path = ev["worktree"]
+            if ev.get("tainted"):
+                tainted_session = True
+
+            ev_type = ev.get("event_type")
+            act_id = ev.get("action_id")
+
+            if ev_type == "action_evaluated" and act_id:
+                if act_id not in actions:
+                    actions[act_id] = ev
+                    ordered_action_ids.append(act_id)
+                else:
+                    # Update with newer data if needed
+                    actions[act_id].update(ev)
+            elif ev_type == "action_executed" and act_id:
+                exec_map[act_id] = ev.get("execution_result") or {}
+
+        # Merge execution results into action evaluations
+        timeline: List[Dict[str, Any]] = []
+        allowed_count = 0
+        blocked_count = 0
+        tainted_count = 0
+        methods: Dict[str, int] = {}
+        severities: Dict[str, int] = {}
+
+        for act_id in ordered_action_ids:
+            act = actions[act_id]
+            ts = act.get("ts", 0)
+            iso_time = datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).isoformat()
+            verdict = act.get("verdict", "allow")
+            decided_by = act.get("decided_by", "auto")
+            severity = act.get("risk_severity", "low")
+            is_tainted = act.get("tainted", False)
+
+            if verdict == "allow":
+                allowed_count += 1
+            else:
+                blocked_count += 1
+
+            if is_tainted:
+                tainted_count += 1
+
+            methods[decided_by] = methods.get(decided_by, 0) + 1
+            severities[severity] = severities.get(severity, 0) + 1
+
+            # Resolve execution result: first check if embedded in act, then check exec_map
+            exec_res = act.get("execution_result") or exec_map.get(act_id)
+            if not exec_res:
+                exec_res = {
+                    "allowed": verdict == "allow",
+                    "exit_code": 0 if verdict == "allow" else 126,
+                    "duration_ms": act.get("latency_ms", 0.0),
+                    "blocked_reason": act.get("metadata", {}).get("blocked_reason") or (
+                        "Blocked by Leash policy" if verdict == "deny" else None
+                    ),
+                }
+
+            risk_assessment = act.get("risk_assessment") or {}
+            why_text = risk_assessment.get("why") or act.get("metadata", {}).get("why") or (
+                "Standard safe command allowed by rule" if verdict == "allow" else "Action restricted by security policy"
+            )
+            summary_text = risk_assessment.get("summary") or act.get("risk_category") or "Evaluated action"
+
+            timeline_item = {
+                "action_id": act_id,
+                "ts": ts,
+                "timestamp_iso": iso_time,
+                "kind": act.get("kind", "shell"),
+                "command": act.get("command") or act.get("target_path") or "-",
+                "target_path": act.get("target_path"),
+                "agent": act.get("agent") or agent_name,
+                "worktree": act.get("worktree") or worktree_path,
+                "verdict": verdict,
+                "decision_method": decided_by,
+                "risk_severity": severity,
+                "risk_category": act.get("risk_category", "general"),
+                "risk_summary": summary_text,
+                "why": why_text,
+                "safer_alternative": risk_assessment.get("safer_alternative"),
+                "rule_ids": risk_assessment.get("rule_ids", []),
+                "tainted": is_tainted,
+                "taint_source": risk_assessment.get("taint_source"),
+                "taint_line": risk_assessment.get("taint_line"),
+                "snapshot_ref": act.get("snapshot_ref"),
+                "latency_ms": act.get("latency_ms", 0.0),
+                "execution_result": exec_res,
+            }
+            timeline.append(timeline_item)
+
+        return {
+            "session_id": session_id,
+            "agent": agent_name,
+            "worktree": worktree_path,
+            "tainted": tainted_session,
+            "total_actions": len(timeline),
+            "allowed_count": allowed_count,
+            "blocked_count": blocked_count,
+            "tainted_count": tainted_count,
+            "decisions_by_method": methods,
+            "severity_breakdown": severities,
+            "timeline": timeline,
+        }

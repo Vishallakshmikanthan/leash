@@ -101,6 +101,9 @@ class LeashDaemonServer:
         self.app.router.add_get("/health", self._handle_status)
         self.app.router.add_get("/pairing", self._handle_pairing)
         self.app.router.add_get("/pending", self._handle_get_pending)
+        self.app.router.add_get("/audit", self._handle_get_audit)
+        self.app.router.add_get("/sessions", self._handle_get_sessions)
+        self.app.router.add_get("/sessions/{session_id}/activity", self._handle_get_session_activity)
         self.app.router.add_post("/action", self._handle_post_action)
         self.app.router.add_post("/decision", self._handle_post_decision)
 
@@ -260,6 +263,26 @@ class LeashDaemonServer:
                 "elapsed_seconds": round(now - start_ts, 2),
             })
         return web.json_response({"count": len(pending_list), "pending": pending_list})
+
+    async def _handle_get_audit(self, request: web.Request) -> web.Response:
+        session_id = request.query.get("session")
+        if session_id:
+            activity = self.audit_logger.get_session_activity(session_id)
+            return web.json_response(activity)
+        limit_str = request.query.get("limit")
+        limit = int(limit_str) if limit_str and limit_str.isdigit() else 100
+        events = self.audit_logger.read_all_events(limit=limit)
+        sessions = self.audit_logger.list_sessions()
+        return web.json_response({"events": events, "sessions": sessions, "total_events": len(events)})
+
+    async def _handle_get_sessions(self, request: web.Request) -> web.Response:
+        sessions = self.audit_logger.list_sessions()
+        return web.json_response({"sessions": sessions, "count": len(sessions)})
+
+    async def _handle_get_session_activity(self, request: web.Request) -> web.Response:
+        session_id = request.match_info.get("session_id", "")
+        activity = self.audit_logger.get_session_activity(session_id)
+        return web.json_response(activity)
 
     async def _handle_post_action(self, request: web.Request) -> web.Response:
         try:
@@ -489,6 +512,23 @@ class LeashDaemonServer:
                     "payload": ack_dict,
                 }))
 
+            # 4. Request Audit History for Session
+            elif msg_type == "get_audit_history":
+                sess_id = payload.get("session_id") or self.default_session_id or "s_default"
+                activity = self.audit_logger.get_session_activity(sess_id)
+                await ws.send_str(json.dumps({
+                    "type": "audit_history",
+                    "payload": activity,
+                }))
+
+            # 5. Request Sessions Overview
+            elif msg_type == "get_sessions":
+                sessions = self.audit_logger.list_sessions()
+                await ws.send_str(json.dumps({
+                    "type": "sessions_list",
+                    "payload": {"sessions": sessions},
+                }))
+
         except Exception as e:
             logger.error(f"Error handling phone message: {e}")
 
@@ -560,7 +600,7 @@ class LeashDaemonServer:
         # 2. Local rule triage (Quick Allow for clean low-risk)
         if self.config.auto_allow_low_risk and self.evaluator.is_quick_allow(request):
             latency = (time.time() - start_time) * 1000
-            self.audit_logger.record_action(
+            evt = self.audit_logger.record_action(
                 session_id=request.session,
                 action_id=request.id,
                 kind=request.kind.value,
@@ -568,10 +608,21 @@ class LeashDaemonServer:
                 target_path=request.target_path,
                 verdict="allow",
                 risk_severity="low",
+                risk_category="normal-development",
                 decided_by="auto",
+                agent=request.agent,
+                worktree=request.worktree,
+                risk_assessment={
+                    "severity": "low",
+                    "category": "normal-development",
+                    "summary": "Safe standard development command auto-allowed by policy",
+                    "why": "Command matches low-risk allow patterns",
+                    "rule_ids": ["R-ALLOW-TESTS"],
+                },
                 latency_ms=latency,
                 tainted=taint.tainted,
             )
+            asyncio.create_task(self.broadcast_to_phone("audit_event", evt.to_dict()))
             return Decision(
                 id=f"d_auto_{request.id}",
                 action_id=request.id,
@@ -589,7 +640,7 @@ class LeashDaemonServer:
         # 4. Low risk permitted automatically if clean
         if assessment.severity == Severity.LOW and not taint.tainted and self.config.auto_allow_low_risk:
             latency = (time.time() - start_time) * 1000
-            self.audit_logger.record_action(
+            evt = self.audit_logger.record_action(
                 session_id=request.session,
                 action_id=request.id,
                 kind=request.kind.value,
@@ -599,9 +650,13 @@ class LeashDaemonServer:
                 risk_severity="low",
                 risk_category=assessment.category,
                 decided_by="rule",
+                agent=request.agent,
+                worktree=request.worktree,
+                risk_assessment=assessment.to_dict(),
                 latency_ms=latency,
                 tainted=False,
             )
+            asyncio.create_task(self.broadcast_to_phone("audit_event", evt.to_dict()))
             return Decision(
                 id=f"d_rule_{request.id}",
                 action_id=request.id,
@@ -638,7 +693,7 @@ class LeashDaemonServer:
             )
 
             latency = (time.time() - start_time) * 1000
-            self.audit_logger.record_action(
+            evt = self.audit_logger.record_action(
                 session_id=request.session,
                 action_id=request.id,
                 kind=request.kind.value,
@@ -648,10 +703,15 @@ class LeashDaemonServer:
                 risk_severity=assessment.severity.value,
                 risk_category=assessment.category,
                 decided_by=decided_by.value,
+                agent=request.agent,
+                worktree=request.worktree,
+                risk_assessment=assessment.to_dict(),
                 latency_ms=latency,
                 snapshot_ref=snapshot_ref,
                 tainted=taint.tainted,
+                metadata={"note": note},
             )
+            asyncio.create_task(self.broadcast_to_phone("audit_event", evt.to_dict()))
             return Decision(
                 id=f"d_offline_{request.id}",
                 action_id=request.id,
@@ -712,7 +772,7 @@ class LeashDaemonServer:
             self.pending_metadata.pop(request.id, None)
 
         latency = (time.time() - start_time) * 1000
-        self.audit_logger.record_action(
+        evt = self.audit_logger.record_action(
             session_id=request.session,
             action_id=request.id,
             kind=request.kind.value,
@@ -722,10 +782,15 @@ class LeashDaemonServer:
             risk_severity=assessment.severity.value,
             risk_category=assessment.category,
             decided_by=decision.by.value,
+            agent=request.agent,
+            worktree=request.worktree,
+            risk_assessment=assessment.to_dict(),
             latency_ms=latency,
             snapshot_ref=snapshot_ref,
             tainted=taint.tainted,
+            metadata={"note": decision.note},
         )
+        await self.broadcast_to_phone("audit_event", evt.to_dict())
 
         return decision
 
@@ -742,7 +807,7 @@ class LeashDaemonServer:
                 f"Reason: {reason}\n"
             )
             duration_ms = (time.time() - start_time) * 1000
-            return CommandResult(
+            cmd_result = CommandResult(
                 action_id=request.id,
                 session_id=request.session,
                 verdict=Verdict.DENY,
@@ -754,9 +819,7 @@ class LeashDaemonServer:
                 risk_assessment=assessment,
                 duration_ms=duration_ms,
             )
-
-        # Allowed: execute shell command
-        if request.kind == ActionKind.SHELL and request.command:
+        elif request.kind == ActionKind.SHELL and request.command:
             try:
                 proc = await asyncio.create_subprocess_shell(
                     request.command,
@@ -774,7 +837,7 @@ class LeashDaemonServer:
                 stderr_str = f"Execution error: {e}"
 
             duration_ms = (time.time() - start_time) * 1000
-            return CommandResult(
+            cmd_result = CommandResult(
                 action_id=request.id,
                 session_id=request.session,
                 verdict=Verdict.ALLOW,
@@ -785,17 +848,42 @@ class LeashDaemonServer:
                 risk_assessment=assessment,
                 duration_ms=duration_ms,
             )
+        else:
+            duration_ms = (time.time() - start_time) * 1000
+            cmd_result = CommandResult(
+                action_id=request.id,
+                session_id=request.session,
+                verdict=Verdict.ALLOW,
+                allowed=True,
+                exit_code=0,
+                stdout="",
+                stderr="",
+                risk_assessment=assessment,
+                duration_ms=duration_ms,
+            )
 
-        # For non-shell actions (file_read, file_edit, etc.)
-        duration_ms = (time.time() - start_time) * 1000
-        return CommandResult(
-            action_id=request.id,
+        # Record structured execution result in persistent audit log
+        self.audit_logger.record_execution_result(
             session_id=request.session,
-            verdict=Verdict.ALLOW,
-            allowed=True,
-            exit_code=0,
-            stdout="",
-            stderr="",
-            risk_assessment=assessment,
-            duration_ms=duration_ms,
+            action_id=request.id,
+            allowed=cmd_result.allowed,
+            exit_code=cmd_result.exit_code,
+            duration_ms=cmd_result.duration_ms,
+            stdout_snippet=cmd_result.stdout[:500] if cmd_result.stdout else None,
+            stderr_snippet=cmd_result.stderr[:500] if cmd_result.stderr else None,
+            blocked_reason=cmd_result.blocked_reason,
         )
+
+        # Broadcast execution outcome to connected Phone Guard
+        await self.broadcast_to_phone("execution_result", {
+            "action_id": request.id,
+            "session_id": request.session,
+            "allowed": cmd_result.allowed,
+            "exit_code": cmd_result.exit_code,
+            "duration_ms": cmd_result.duration_ms,
+            "stdout_snippet": cmd_result.stdout[:500] if cmd_result.stdout else "",
+            "stderr_snippet": cmd_result.stderr[:500] if cmd_result.stderr else "",
+            "blocked_reason": cmd_result.blocked_reason,
+        })
+
+        return cmd_result

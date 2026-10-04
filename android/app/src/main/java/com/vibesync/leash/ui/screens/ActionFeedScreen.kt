@@ -263,6 +263,55 @@ fun FeedItemRow(item: AuditFeedItem) {
                             color = LeashCyan
                         )
                     }
+
+                    // Execution Result details
+                    item.executionResult?.let { exec ->
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Surface(
+                            color = if (exec.allowed) LeashSurfaceVariant else LeashCritical.copy(alpha = 0.1f),
+                            shape = RoundedCornerShape(6.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(modifier = Modifier.padding(8.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(
+                                        text = if (exec.allowed) "EXECUTION: SUCCESS (Exit ${exec.exit_code})" else "EXECUTION: BLOCKED",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (exec.allowed) LeashPrimary else LeashCritical
+                                    )
+                                    Text(
+                                        text = "${exec.duration_ms.toInt()}ms",
+                                        fontSize = 10.sp,
+                                        color = LeashTextMuted,
+                                        fontFamily = FontFamily.Monospace
+                                    )
+                                }
+                                exec.blocked_reason?.let { reason ->
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "Reason: $reason",
+                                        fontSize = 11.sp,
+                                        color = LeashCritical
+                                    )
+                                }
+                                exec.stdout_snippet?.takeIf { it.isNotBlank() }?.let { snippet ->
+                                    Spacer(modifier = Modifier.height(2.dp))
+                                    Text(
+                                        text = "Output: $snippet",
+                                        fontSize = 10.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = LeashTextSecondary,
+                                        maxLines = 3
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = "Action ID: ${req.id}",

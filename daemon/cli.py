@@ -62,6 +62,96 @@ def cmd_report(args: argparse.Namespace) -> None:
     print(ReceiptBuilder.generate_markdown(session_id, events))
 
 
+def cmd_audit(args: argparse.Namespace) -> None:
+    config = DaemonConfig.load_default()
+    audit_logger = AuditLogger(config.audit_log_path)
+
+    if args.sessions:
+        sessions = audit_logger.list_sessions()
+        if args.json:
+            print(json.dumps({"sessions": sessions}, indent=2))
+            return
+        if not sessions:
+            print("No recorded sessions found in audit log.")
+            return
+        print("\n=== RECORDED LEASH SESSIONS ===")
+        print(f"{'SESSION ID':<22} {'AGENT':<16} {'ACTIONS':<8} {'ALLOWED':<8} {'BLOCKED':<8} {'TAINTED':<8}")
+        print("-" * 72)
+        for s in sessions:
+            taint_str = "YES" if s.get("tainted") else "NO"
+            print(f"{s['session_id']:<22} {s['agent']:<16} {s['total_actions']:<8} {s['allowed_count']:<8} {s['denied_count']:<8} {taint_str:<8}")
+        print("===============================\n")
+        return
+
+    session_id = args.session
+    if not session_id:
+        sessions = audit_logger.list_sessions()
+        if sessions:
+            session_id = sessions[0]["session_id"]
+        else:
+            print("No audit history found.")
+            return
+
+    activity = audit_logger.get_session_activity(session_id)
+    if args.json:
+        print(json.dumps(activity, indent=2))
+        return
+
+    timeline = activity.get("timeline", [])
+    if args.tail and args.tail > 0:
+        timeline = timeline[-args.tail:]
+
+    print("\n" + "=" * 80)
+    print(f" LEASH SESSION ACTIVITY: {activity['session_id']}")
+    print(f" Agent: {activity.get('agent', 'unknown')} | Worktree: {activity.get('worktree') or 'default'}")
+    taint_status = "TAINTED (RISK ELEVATED)" if activity.get("tainted") else "CLEAN"
+    print(f" Provenance: {taint_status}")
+    print(f" Total Actions: {activity['total_actions']} | Allowed: {activity['allowed_count']} | Blocked: {activity['blocked_count']} | Tainted: {activity['tainted_count']}")
+
+    if activity.get("decisions_by_method"):
+        methods_str = ", ".join(f"{k}: {v}" for k, v in activity["decisions_by_method"].items())
+        print(f" Decision Methods: {methods_str}")
+    if activity.get("severity_breakdown"):
+        sev_str = ", ".join(f"{k.upper()}: {v}" for k, v in activity["severity_breakdown"].items())
+        print(f" Risk Severities: {sev_str}")
+    print("=" * 80)
+
+    if not timeline:
+        print(" No actions recorded for this session.")
+        print("=" * 80 + "\n")
+        return
+
+    print(f"\n{'TIME':<10} {'VERDICT':<9} {'METHOD':<10} {'SEV':<8} {'COMMAND / ATTEMPT':<40}")
+    print("-" * 80)
+
+    for item in timeline:
+        time_part = item["timestamp_iso"].split("T")[1][:8] if "T" in item["timestamp_iso"] else str(item["ts"])
+        verdict = item["verdict"].upper()
+        method = item["decision_method"]
+        sev = item["risk_severity"].upper()
+        cmd = item["command"].replace("\n", " ")
+        if len(cmd) > 38:
+            cmd = cmd[:35] + "..."
+
+        print(f"{time_part:<10} {verdict:<9} {method:<10} {sev:<8} {cmd:<40}")
+        print(f"  └─ Why: {item['why']}")
+        exec_res = item.get("execution_result") or {}
+        if verdict == "ALLOW":
+            exit_code = exec_res.get("exit_code", 0)
+            duration = exec_res.get("duration_ms", 0.0)
+            print(f"  └─ Execution: Exit {exit_code} ({duration:.1f}ms)")
+        else:
+            reason = exec_res.get("blocked_reason") or item.get("why") or "Denied by policy"
+            print(f"  └─ Execution: BLOCKED - {reason}")
+        if item.get("tainted"):
+            src = item.get("taint_source") or "untrusted input"
+            line = f":{item['taint_line']}" if item.get("taint_line") else ""
+            print(f"  └─ Taint Influence: {src}{line}")
+        print()
+
+    print("=" * 80 + "\n")
+
+
 async def run_server(config: DaemonConfig) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     session_mgr = SessionManager(Path("."))
@@ -153,6 +243,13 @@ def main() -> None:
     report_parser = subparsers.add_parser("report", help="Generate Markdown agent receipt for PR")
     report_parser.add_argument("--session", required=True, help="Session ID to report")
 
+    # leash audit [--session S_ID] [--sessions] [--json] [--tail N]
+    audit_parser = subparsers.add_parser("audit", help="Inspect session audit log, decisions, and execution results")
+    audit_parser.add_argument("--session", default=None, help="Session ID to view activity for")
+    audit_parser.add_argument("--sessions", action="store_true", help="List all recorded sessions")
+    audit_parser.add_argument("--json", action="store_true", help="Output raw structured JSON")
+    audit_parser.add_argument("--tail", type=int, default=None, help="Show last N activity events")
+
     # leash exec [--json] [--session S_ID] -- <command>
     exec_parser = subparsers.add_parser("exec", help="Execute a command through the Leash interceptor")
     exec_parser.add_argument("--json", action="store_true", help="Output JSON CommandResult")
@@ -172,6 +269,8 @@ def main() -> None:
         asyncio.run(run_server(config))
     elif args.command == "report":
         cmd_report(args)
+    elif args.command == "audit":
+        cmd_audit(args)
     elif args.command == "exec":
         cmd_exec(args)
     elif args.command == "run":
