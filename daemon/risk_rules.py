@@ -988,3 +988,44 @@ class NormalDevelopmentRule(BaseRule):
             )
 
         return None
+
+
+# -----------------------------------------------------------------------------
+# 11. Untrusted Text Influence Rule (F1 Provenance)
+# -----------------------------------------------------------------------------
+
+class UntrustedTextInfluenceRule(BaseRule):
+    """Detects actions performed after agent read untrusted content (README, issue, web)."""
+
+    @property
+    def rule_id(self) -> str:
+        return "R-TAINT-INFLUENCE"
+
+    @property
+    def category(self) -> str:
+        return "untrusted-text-influence"
+
+    @property
+    def default_severity(self) -> Severity:
+        return Severity.HIGH
+
+    def evaluate(self, request: ActionRequest, parsed_shell: ParsedShell) -> Optional[RuleMatch]:
+        if not request.taint or not request.taint.tainted:
+            return None
+
+        source = request.taint.source or "untrusted content"
+        line_str = f":{request.taint.line}" if request.taint.line else ""
+
+        return RuleMatch(
+            rule_id=self.rule_id,
+            category=self.category,
+            severity=Severity.HIGH,
+            summary=f"[TAINTED] Action influenced by untrusted source: {source}",
+            why=(
+                f"Action performed after agent read untrusted content at {source}{line_str}. "
+                "Untrusted prompt instructions can manipulate shell actions via prompt injection."
+            ),
+            safer_alternative="Verify originating source and validate command necessity before approving.",
+            details={"source": source, "line": request.taint.line},
+        )
+

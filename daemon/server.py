@@ -4,10 +4,12 @@ daemon/server.py - Async WebSocket & HTTP server connecting Laptop interceptor t
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import time
 import uuid
+
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 
@@ -120,6 +122,9 @@ class LeashDaemonServer:
         self.app.router.add_get("/sessions/{session_id}/activity", self._handle_get_session_activity)
         self.app.router.add_post("/action", self._handle_post_action)
         self.app.router.add_post("/decision", self._handle_post_decision)
+        self.app.router.add_post("/provenance", self._handle_post_provenance)
+        self.app.router.add_get("/sessions/{session_id}/provenance", self._handle_get_session_provenance)
+
 
         # Ensure at least one session exists
         if not self.default_session_id:
@@ -742,6 +747,20 @@ class LeashDaemonServer:
                     "payload": details or {},
                 }))
 
+            elif msg_type == "query_provenance":
+                sess_id = payload.get("session_id") or self.session_mgr.active_session_id
+                events = [e.to_dict() for e in self.session_mgr.get_provenance_events(sess_id or "")]
+                taint = self.session_mgr.get_taint_context(sess_id or "")
+                await ws.send_str(json.dumps({
+                    "type": "provenance_status",
+                    "payload": {
+                        "session_id": sess_id,
+                        "tainted": taint.tainted,
+                        "taint": taint.to_dict(),
+                        "events": events,
+                    }
+                }))
+
         except Exception as e:
             logger.error(f"Error handling phone message: {e}")
 
@@ -805,6 +824,13 @@ class LeashDaemonServer:
         # 1. Bind request to session, agent, worktree, scope flags, taint, and runaway guard
         request = self.session_mgr.bind_action(request)
         taint = request.taint
+
+        # Emit any unbroadcasted provenance events recorded for this session
+        for p_evt in self.session_mgr.get_provenance_events(request.session):
+            if not getattr(p_evt, "_broadcasted", False):
+                p_evt._broadcasted = True
+                asyncio.create_task(self.emit_provenance_event(p_evt))
+
 
         # 2. Enforce session lifecycle states (terminated / paused block immediately)
         if "session-terminated" in request.scope_flags:
@@ -1026,10 +1052,12 @@ class LeashDaemonServer:
         if self.local_decider is not None:
             async def _invoke_local_decider():
                 try:
-                    dec = await self.local_decider(request, assessment)
+                    res = self.local_decider(request, assessment)
+                    dec = await res if inspect.isawaitable(res) else res
                     if request.id in self.pending_decisions and not fut.done():
                         fut.set_result(dec)
                 except Exception as ex:
+
                     logger.error(f"Error in local decider callback: {ex}")
 
             asyncio.create_task(_invoke_local_decider())
@@ -1174,3 +1202,47 @@ class LeashDaemonServer:
         })
 
         return cmd_result
+
+    async def _handle_post_provenance(self, request: web.Request) -> web.Response:
+        """HTTP endpoint to report an untrusted ingestion event."""
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        session_id = data.get("session_id") or self.default_session_id or "s_default"
+        source = data.get("source", "untrusted-input")
+        line = data.get("line")
+        flags = data.get("flags", ["untrusted-read"])
+        snippet = data.get("snippet")
+
+        event = ProvenanceEvent(
+            id=f"p_{uuid.uuid4().hex[:12]}",
+            session=session_id,
+            ts=int(time.time()),
+            kind=ProvenanceKind.UNTRUSTED_READ,
+            source=source,
+            line=int(line) if line is not None else 1,
+            flags=flags,
+            snippet=snippet,
+        )
+        await self.emit_provenance_event(event)
+        return web.json_response({"status": "ok", "event": event.to_dict()}, status=201)
+
+    async def _handle_get_session_provenance(self, request: web.Request) -> web.Response:
+        """HTTP endpoint returning provenance events and active taint state for a session."""
+        session_id = request.match_info["session_id"]
+        session = self.session_mgr.get_session(session_id)
+        if not session:
+            return web.json_response({"error": "Session not found"}, status=404)
+
+        events = [e.to_dict() for e in self.session_mgr.get_provenance_events(session_id)]
+        taint = self.session_mgr.get_taint_context(session_id)
+        return web.json_response({
+            "session_id": session_id,
+            "tainted": taint.tainted,
+            "taint": taint.to_dict(),
+            "events": events,
+            "events_count": len(events),
+        })
+

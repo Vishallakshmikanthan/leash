@@ -174,6 +174,35 @@ class AuditLogger:
         self.log(event)
         return event
 
+    def record_provenance_event(
+        self,
+        event: Any,
+        agent: Optional[str] = None,
+        worktree: Optional[str] = None,
+    ) -> AuditEvent:
+        """Records a provenance untrusted content ingestion event."""
+        metadata = {
+            "flags": getattr(event, "flags", []),
+            "snippet": sanitize_text(getattr(event, "snippet", None), max_len=300),
+            "line": getattr(event, "line", None),
+            "provenance_kind": getattr(event.kind, "value", str(getattr(event, "kind", ""))),
+        }
+        return self.record_event(
+            event_type="provenance_event",
+            session_id=event.session,
+            action_id=event.id,
+            kind=getattr(event.kind, "value", str(getattr(event, "kind", ""))),
+            verdict="taint",
+            risk_severity="high",
+            decided_by="provenance_gate",
+            target_path=getattr(event, "source", None),
+            agent=agent,
+            worktree=worktree,
+            tainted=True,
+            metadata=metadata,
+        )
+
+
     def record_canary_alert(
         self,
         session_id: str,

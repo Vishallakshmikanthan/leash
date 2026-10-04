@@ -20,11 +20,13 @@ from daemon.risk_rules import (
     ScopeViolationsRule,
     SecretExposureRule,
     SensitiveFileChangesRule,
+    UntrustedTextInfluenceRule,
 )
 from daemon.shell_parser import ParsedShell, ShellParser
 from gates.base import BaseGate, GateResult
 from gates.hidden_text import HiddenTextGate
 from gates.package_gate import PackageGate
+from gates.provenance_tracker import ProvenanceTrackerGate
 from gates.secret_fence import SecretFenceGate
 from gates.workflow_watchlist import WorkflowWatchlistGate
 
@@ -55,6 +57,7 @@ class PolicyEvaluator:
             OutboundDataTransferRule(),
             PackageInstallationRule(),
             ScopeViolationsRule(),
+            UntrustedTextInfluenceRule(),
             NormalDevelopmentRule(),
         ]
 
@@ -64,6 +67,7 @@ class PolicyEvaluator:
             PackageGate(),
             HiddenTextGate(),
             WorkflowWatchlistGate(),
+            ProvenanceTrackerGate(),
         ]
 
     def register_rule(self, rule: BaseRule) -> None:
@@ -174,14 +178,30 @@ class PolicyEvaluator:
         # 5. Provenance-based escalation (F1)
         tainted_escalation = False
         if request.taint.tainted:
+            tainted_escalation = True
+            source = request.taint.source or "unknown"
+            line_str = f":{request.taint.line}" if request.taint.line is not None else ""
+
             if severity == Severity.MEDIUM:
                 severity = Severity.HIGH
-                tainted_escalation = True
                 category = "untrusted-text-influence"
-                summary = f"[TAINTED] Action escalated to HIGH following untrusted read: {request.taint.source or 'unknown'}"
-                why = f"Triggered after agent ingested untrusted content at {request.taint.source}:{request.taint.line}."
+                summary = f"[TAINTED] Action escalated to HIGH following untrusted read: {source}"
+                why = f"Triggered after agent ingested untrusted content at {source}{line_str}."
             elif severity == Severity.HIGH:
-                tainted_escalation = True
+                category = "untrusted-text-influence" if category == "normal-development" else category
+                summary = f"[TAINTED] High-risk action following untrusted read: {source} - {summary}"
+                why = f"{why} Originating untrusted source: {source}{line_str}."
+            elif severity == Severity.LOW:
+                severity = Severity.MEDIUM
+                category = "untrusted-text-influence"
+                summary = f"[TAINTED] Action escalated to MEDIUM following untrusted read: {source}"
+                why = f"Triggered after agent ingested untrusted content at {source}{line_str}."
+            elif severity == Severity.CRITICAL:
+                why = f"{why} Session is tainted by untrusted content from {source}{line_str}."
+
+            if "R-TAINT-INFLUENCE" not in rule_ids:
+                rule_ids.insert(0, "R-TAINT-INFLUENCE")
+
 
         return RiskAssessment(
             id=f"r_{uuid.uuid4().hex[:12]}",

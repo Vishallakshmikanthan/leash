@@ -48,10 +48,12 @@ Leash is an out-of-band safety and governance layer for autonomous AI coding age
 - **Leash Daemon (`daemon/`)**: Orchestrates security gate evaluation, provenance tracking, session worktrees, phone WebSocket transport, and append-only audit logging.
 
 ### 2.2 Security Gates (`gates/`)
+- **Provenance Tracker (`gates/provenance_tracker.py`)**: Identifies untrusted content (README files, issue text, web downloads, configured sources), extracts relevant instruction line numbers, marks sessions tainted, and escalates subsequent action severity.
 - **Secret Fence (`gates/secret_fence.py`)**: Blocks reads of `.env`, `~/.ssh`, cloud credentials, and alerts on canary token access.
 - **Package Gate (`gates/package_gate.py`)**: Offline typosquatting detection (Levenshtein distance against popular packages) and malicious install script checks.
 - **Hidden Text Scanner (`gates/hidden_text.py`)**: Detects zero-width Unicode and bidirectional (BiDi) override codepoints used to disguise malicious shell payloads.
 - **Workflow Watchlist (`gates/workflow_watchlist.py`)**: Protects CI/CD workflows, Dockerfiles, and package lockfiles.
+
 
 ### 2.3 Session & Provenance Management (`session/`)
 - **Worktree Isolation (`session/worktree.py`)**: Runs each agent session in an isolated git worktree (`leash/<session-id>`).

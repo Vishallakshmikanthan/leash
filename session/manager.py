@@ -17,6 +17,7 @@ from contracts.models import (
     SnapshotRef,
     TaintContext,
 )
+from gates.provenance_tracker import ProvenanceTracker
 from session.runaway_guard import RunawayGuard
 from session.scope import ScopeContract
 from session.snapshot import SnapshotManager
@@ -28,17 +29,20 @@ logger = logging.getLogger("leash.session.manager")
 class SessionManager:
     """Manages active Leash sessions, worktree isolation, provenance tracking, snapshots, and runaway protection."""
 
-    def __init__(self, repo_root: Path):
+    def __init__(self, repo_root: Path, provenance_tracker: Optional[ProvenanceTracker] = None):
         self.repo_root = Path(repo_root).resolve()
         self.worktree_mgr = WorktreeManager(self.repo_root)
         self.snapshot_mgr = SnapshotManager(self.repo_root)
+        self.provenance_tracker = provenance_tracker or ProvenanceTracker()
 
         self.sessions: Dict[str, SessionScope] = {}
         self.session_guards: Dict[str, RunawayGuard] = {}
         self.session_taints: Dict[str, TaintContext] = {}
         self.session_scopes: Dict[str, ScopeContract] = {}
         self.session_action_history: Dict[str, List[str]] = {}
+        self.session_provenance_history: Dict[str, List[ProvenanceEvent]] = {}
         self.active_session_id: Optional[str] = None
+
 
     @property
     def active_sessions(self) -> Dict[str, SessionScope]:
@@ -169,7 +173,38 @@ class SessionManager:
 
         # 4. Attach session taint context
         taint = self.get_taint_context(session_id)
+        if not taint.tainted and request.taint and request.taint.tainted:
+            # Request arrived with explicit taint: taint session
+            p_event = self.provenance_tracker.create_provenance_event(
+                session_id=session_id,
+                source=request.taint.source or "untrusted-input",
+                line=request.taint.line or 1,
+                flags=["explicit-taint"],
+                snippet=f"Action explicitly flagged with taint from {request.taint.source}",
+            )
+            self.record_provenance_event(p_event)
+            taint = self.get_taint_context(session_id)
+        elif not taint.tainted:
+            detected = self.provenance_tracker.detect_untrusted_read(
+                request,
+                base_dir=session.worktree_path or str(self.repo_root),
+                candidate_dirs=[session.worktree_path, session.repo_path, str(self.repo_root), request.cwd],
+            )
+
+            if detected:
+                src, line, flags, snip = detected
+                p_event = self.provenance_tracker.create_provenance_event(
+                    session_id=session_id,
+                    source=src,
+                    line=line,
+                    flags=flags,
+                    snippet=snip,
+                )
+                self.record_provenance_event(p_event)
+                taint = self.get_taint_context(session_id)
+
         request.taint = taint
+
 
         # 5. Detect scope drift against declared contract (allowed paths, commands, hosts)
         scope_contract = self.session_scopes.get(session_id)
@@ -288,10 +323,28 @@ class SessionManager:
             source=event.source,
             line=event.line,
         )
+        self.session_provenance_history.setdefault(event.session, []).append(event)
 
     def get_taint_context(self, session_id: str) -> TaintContext:
         """Retrieves active taint context for the given session."""
         return self.session_taints.get(session_id, TaintContext(tainted=False))
+
+    def get_provenance_events(self, session_id: str) -> List[ProvenanceEvent]:
+        """Retrieves list of provenance events recorded for this session."""
+        return list(self.session_provenance_history.get(session_id, []))
+
+    def is_session_tainted(self, session_id: str) -> bool:
+        """Returns True if the session has ingested untrusted content."""
+        return self.get_taint_context(session_id).tainted
+
+    def add_untrusted_source(self, source_or_pattern: str) -> None:
+        """Registers an additional untrusted source pattern or path."""
+        self.provenance_tracker.add_untrusted_source(source_or_pattern)
+
+    def configure_untrusted_sources(self, sources: List[str]) -> None:
+        """Configures custom untrusted sources."""
+        self.provenance_tracker.configure_untrusted_sources(sources)
+
 
     def create_pre_action_snapshot(self, session_id: str, desc: str) -> Optional[SnapshotRef]:
         """Creates a point-in-time hidden Git ref snapshot before a risky operation."""

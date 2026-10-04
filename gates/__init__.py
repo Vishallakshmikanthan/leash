@@ -13,6 +13,7 @@ from gates.secret_fence import (
 from gates.package_gate import PackageGate
 from gates.hidden_text import HiddenTextGate
 from gates.workflow_watchlist import WorkflowWatchlistGate
+from gates.provenance_tracker import ProvenanceTracker, ProvenanceTrackerGate
 
 __all__ = [
     "BaseGate",
@@ -26,5 +27,8 @@ __all__ = [
     "PackageGate",
     "HiddenTextGate",
     "WorkflowWatchlistGate",
+    "ProvenanceTracker",
+    "ProvenanceTrackerGate",
 ]
+
 
