@@ -45,6 +45,15 @@ class ProvenanceKind(str, Enum):
     PROMPT_INJECTION_SUSPECTED = "prompt_injection_suspected"
 
 
+class SessionState(str, Enum):
+    INITIALIZING = "initializing"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    TERMINATING = "terminating"
+    TERMINATED = "terminated"
+    FAILED = "failed"
+
+
 @dataclass
 class TaintContext:
     tainted: bool = False
@@ -322,12 +331,46 @@ class SessionScope:
     allowed_paths: List[str] = field(default_factory=list)
     allowed_commands: List[str] = field(default_factory=list)
     allowed_hosts: List[str] = field(default_factory=list)
+    agent: str = "coding-agent"
+    state: SessionState = SessionState.ACTIVE
+    task_description: Optional[str] = None
+    branch_name: Optional[str] = None
     tainted: bool = False
     taint_events: List[str] = field(default_factory=list)
     snapshots: List[str] = field(default_factory=list)
+    terminated_at: Optional[int] = None
+    termination_reason: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+        res = asdict(self)
+        res["state"] = self.state.value if isinstance(self.state, SessionState) else str(self.state)
+        return res
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> SessionScope:
+        state_raw = data.get("state", "active")
+        try:
+            state = SessionState(state_raw)
+        except ValueError:
+            state = SessionState.ACTIVE
+        return cls(
+            session_id=data["session_id"],
+            created_at=int(data["created_at"]),
+            worktree_path=data["worktree_path"],
+            repo_path=data["repo_path"],
+            allowed_paths=data.get("allowed_paths", []),
+            allowed_commands=data.get("allowed_commands", []),
+            allowed_hosts=data.get("allowed_hosts", []),
+            agent=data.get("agent", "coding-agent"),
+            state=state,
+            task_description=data.get("task_description"),
+            branch_name=data.get("branch_name"),
+            tainted=bool(data.get("tainted", False)),
+            taint_events=data.get("taint_events", []),
+            snapshots=data.get("snapshots", []),
+            terminated_at=data.get("terminated_at"),
+            termination_reason=data.get("termination_reason"),
+        )
 
 
 @dataclass

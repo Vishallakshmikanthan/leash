@@ -14,6 +14,7 @@ from contracts.models import (
     ProvenanceEvent,
     SnapshotRef,
     SessionScope,
+    SessionState,
     AuditEvent,
     CommandResult,
     ExecutionResult,
@@ -35,6 +36,7 @@ __all__ = [
     "ProvenanceEvent",
     "SnapshotRef",
     "SessionScope",
+    "SessionState",
     "AuditEvent",
     "LeashSigner",
 ]

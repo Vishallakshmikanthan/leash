@@ -28,7 +28,16 @@
     "snapshots": {
       "type": "array",
       "items": { "type": "string" }
-    }
+    },
+    "agent": { "type": "string" },
+    "state": {
+      "type": "string",
+      "enum": ["initializing", "active", "paused", "terminating", "terminated", "failed"]
+    },
+    "task_description": { "type": ["string", "null"] },
+    "branch_name": { "type": ["string", "null"] },
+    "terminated_at": { "type": ["integer", "null"] },
+    "termination_reason": { "type": ["string", "null"] }
   },
   "additionalProperties": false
 }

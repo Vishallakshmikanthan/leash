@@ -103,6 +103,14 @@ class LeashDaemonServer:
         self.app.router.add_get("/pending", self._handle_get_pending)
         self.app.router.add_get("/audit", self._handle_get_audit)
         self.app.router.add_get("/sessions", self._handle_get_sessions)
+        self.app.router.add_post("/sessions", self._handle_post_sessions)
+        self.app.router.add_get("/sessions/{session_id}", self._handle_get_session_details)
+        self.app.router.add_post("/sessions/{session_id}/pause", self._handle_post_pause_session)
+        self.app.router.add_post("/sessions/{session_id}/resume", self._handle_post_resume_session)
+        self.app.router.add_post("/sessions/{session_id}/terminate", self._handle_post_terminate_session)
+        self.app.router.add_post("/sessions/{session_id}/rewind", self._handle_post_rewind_session)
+        self.app.router.add_get("/sessions/{session_id}/snapshots", self._handle_get_session_snapshots)
+        self.app.router.add_post("/sessions/{session_id}/scope", self._handle_post_session_scope)
         self.app.router.add_get("/sessions/{session_id}/activity", self._handle_get_session_activity)
         self.app.router.add_post("/action", self._handle_post_action)
         self.app.router.add_post("/decision", self._handle_post_decision)
@@ -276,8 +284,147 @@ class LeashDaemonServer:
         return web.json_response({"events": events, "sessions": sessions, "total_events": len(events)})
 
     async def _handle_get_sessions(self, request: web.Request) -> web.Response:
-        sessions = self.audit_logger.list_sessions()
-        return web.json_response({"sessions": sessions, "count": len(sessions)})
+        active_only = request.query.get("active", "").lower() in ("true", "1")
+        sessions = self.session_mgr.list_sessions(active_only=active_only)
+        sessions_data = [s.to_dict() for s in sessions]
+        # Also include any historic sessions found in audit log
+        audit_sessions = self.audit_logger.list_sessions()
+        known_ids = {s.get("session_id") for s in sessions_data if isinstance(s, dict)}
+        for asess in audit_sessions:
+            asid = asess.get("session_id") if isinstance(asess, dict) else str(asess)
+            if asid and asid not in known_ids:
+                sessions_data.append(asess if isinstance(asess, dict) else {
+                    "session_id": asid,
+                    "created_at": 0,
+                    "worktree_path": "",
+                    "repo_path": str(self.session_mgr.repo_root),
+                    "agent": "coding-agent",
+                    "state": "terminated",
+                })
+                known_ids.add(asid)
+        return web.json_response({
+            "sessions": sessions_data,
+            "count": len(sessions_data),
+            "active_session": self.session_mgr.active_session_id,
+        })
+
+    async def _handle_post_sessions(self, request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        allowed_paths = body.get("allowed_paths")
+        allowed_commands = body.get("allowed_commands")
+        allowed_hosts = body.get("allowed_hosts")
+        agent_name = body.get("agent") or body.get("agent_name") or "coding-agent"
+        task_description = body.get("task_description")
+        session_id = body.get("session_id") or body.get("session")
+        base_ref = body.get("base_ref", "HEAD")
+
+        scope = self.session_mgr.create_session(
+            allowed_paths=allowed_paths,
+            allowed_commands=allowed_commands,
+            allowed_hosts=allowed_hosts,
+            agent_name=agent_name,
+            task_description=task_description,
+            session_id=session_id,
+            base_ref=base_ref,
+        )
+
+        await self.broadcast_to_phone("session_created", scope.to_dict())
+        return web.json_response(scope.to_dict(), status=201)
+
+    async def _handle_get_session_details(self, request: web.Request) -> web.Response:
+        session_id = request.match_info.get("session_id", "")
+        details = self.session_mgr.get_session_details(session_id)
+        if not details:
+            return web.json_response({"error": f"Session '{session_id}' not found"}, status=404)
+        return web.json_response(details)
+
+    async def _handle_post_pause_session(self, request: web.Request) -> web.Response:
+        session_id = request.match_info.get("session_id", "")
+        ok = self.session_mgr.pause_session(session_id)
+        if not ok:
+            return web.json_response(
+                {"error": f"Could not pause session '{session_id}' (not active or not found)"}, status=400
+            )
+        session = self.session_mgr.get_session(session_id)
+        payload = session.to_dict() if session else {"session_id": session_id, "state": "paused"}
+        await self.broadcast_to_phone("session_state_changed", payload)
+        return web.json_response({"status": "ok", "session_id": session_id, "state": "paused"})
+
+    async def _handle_post_resume_session(self, request: web.Request) -> web.Response:
+        session_id = request.match_info.get("session_id", "")
+        ok = self.session_mgr.resume_session(session_id)
+        if not ok:
+            return web.json_response(
+                {"error": f"Could not resume session '{session_id}' (not paused or not found)"}, status=400
+            )
+        session = self.session_mgr.get_session(session_id)
+        payload = session.to_dict() if session else {"session_id": session_id, "state": "active"}
+        await self.broadcast_to_phone("session_state_changed", payload)
+        return web.json_response({"status": "ok", "session_id": session_id, "state": "active"})
+
+    async def _handle_post_terminate_session(self, request: web.Request) -> web.Response:
+        session_id = request.match_info.get("session_id", "")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        reason = body.get("reason", "User requested termination")
+        cleanup_worktree = bool(body.get("cleanup_worktree", True))
+        save_branch = bool(body.get("save_branch", True))
+
+        scope = self.session_mgr.terminate_session(
+            session_id=session_id,
+            reason=reason,
+            cleanup_worktree=cleanup_worktree,
+            save_branch=save_branch,
+        )
+        if not scope:
+            return web.json_response({"error": f"Session '{session_id}' not found"}, status=404)
+
+        await self.broadcast_to_phone("session_state_changed", scope.to_dict())
+        return web.json_response(scope.to_dict())
+
+    async def _handle_post_rewind_session(self, request: web.Request) -> web.Response:
+        session_id = request.match_info.get("session_id", "")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        git_ref = body.get("git_ref")
+        ok = self.session_mgr.rewind(session_id, git_ref)
+        if not ok:
+            return web.json_response({"error": f"Rewind failed for session '{session_id}'"}, status=400)
+
+        await self.broadcast_to_phone("rewind_executed", {
+            "session_id": session_id, "git_ref": git_ref, "success": True
+        })
+        return web.json_response({"status": "ok", "session_id": session_id, "rewound": True})
+
+    async def _handle_get_session_snapshots(self, request: web.Request) -> web.Response:
+        session_id = request.match_info.get("session_id", "")
+        snaps = self.session_mgr.list_snapshots(session_id)
+        return web.json_response({"session_id": session_id, "snapshots": [s.to_dict() for s in snaps]})
+
+    async def _handle_post_session_scope(self, request: web.Request) -> web.Response:
+        session_id = request.match_info.get("session_id", "")
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+        scope = self.session_mgr.update_session_scope(
+            session_id=session_id,
+            allowed_paths=body.get("allowed_paths"),
+            allowed_commands=body.get("allowed_commands"),
+            allowed_hosts=body.get("allowed_hosts"),
+        )
+        if not scope:
+            return web.json_response({"error": f"Session '{session_id}' not found"}, status=404)
+        return web.json_response(scope.to_dict())
 
     async def _handle_get_session_activity(self, request: web.Request) -> web.Response:
         session_id = request.match_info.get("session_id", "")
@@ -523,10 +670,70 @@ class LeashDaemonServer:
 
             # 5. Request Sessions Overview
             elif msg_type == "get_sessions":
-                sessions = self.audit_logger.list_sessions()
+                sessions = [s.to_dict() for s in self.session_mgr.list_sessions()]
                 await ws.send_str(json.dumps({
                     "type": "sessions_list",
-                    "payload": {"sessions": sessions},
+                    "payload": {"sessions": sessions, "count": len(sessions)},
+                }))
+
+            # 6. Session Lifecycle Messages from Phone
+            elif msg_type == "create_session":
+                sess = self.session_mgr.create_session(
+                    allowed_paths=payload.get("allowed_paths"),
+                    allowed_commands=payload.get("allowed_commands"),
+                    allowed_hosts=payload.get("allowed_hosts"),
+                    agent_name=payload.get("agent", "coding-agent"),
+                    task_description=payload.get("task_description"),
+                )
+                await ws.send_str(json.dumps({
+                    "type": "session_created",
+                    "payload": sess.to_dict(),
+                }))
+
+            elif msg_type == "terminate_session":
+                sess_id = payload.get("session_id") or self.session_mgr.active_session_id
+                scope = self.session_mgr.terminate_session(
+                    session_id=sess_id or "",
+                    reason=payload.get("reason", "Terminated via phone"),
+                    cleanup_worktree=payload.get("cleanup_worktree", True),
+                    save_branch=payload.get("save_branch", True),
+                )
+                await ws.send_str(json.dumps({
+                    "type": "session_terminated",
+                    "payload": scope.to_dict() if scope else {},
+                }))
+
+            elif msg_type == "pause_session":
+                sess_id = payload.get("session_id") or self.session_mgr.active_session_id
+                ok = self.session_mgr.pause_session(sess_id or "")
+                await ws.send_str(json.dumps({
+                    "type": "session_paused",
+                    "payload": {"session_id": sess_id, "success": ok},
+                }))
+
+            elif msg_type == "resume_session":
+                sess_id = payload.get("session_id") or self.session_mgr.active_session_id
+                ok = self.session_mgr.resume_session(sess_id or "")
+                await ws.send_str(json.dumps({
+                    "type": "session_resumed",
+                    "payload": {"session_id": sess_id, "success": ok},
+                }))
+
+            elif msg_type in ("rewind", "rewind_session"):
+                sess_id = payload.get("session_id") or self.session_mgr.active_session_id
+                git_ref = payload.get("git_ref")
+                ok = self.session_mgr.rewind(sess_id or "", git_ref)
+                await ws.send_str(json.dumps({
+                    "type": "rewind_result",
+                    "payload": {"session_id": sess_id, "git_ref": git_ref, "success": ok},
+                }))
+
+            elif msg_type == "get_session_details":
+                sess_id = payload.get("session_id") or self.session_mgr.active_session_id
+                details = self.session_mgr.get_session_details(sess_id or "")
+                await ws.send_str(json.dumps({
+                    "type": "session_details",
+                    "payload": details or {},
                 }))
 
         except Exception as e:
@@ -589,15 +796,41 @@ class LeashDaemonServer:
         """Evaluates ActionRequest, auto-allows or waits for approval, records audit log."""
         start_time = time.time()
 
-        # 1. Update request with session taint context
-        taint = self.session_mgr.get_taint_context(request.session)
-        request.taint = taint
+        # 1. Bind request to session, agent, worktree, scope flags, taint, and runaway guard
+        request = self.session_mgr.bind_action(request)
+        taint = request.taint
+
+        # 2. Enforce session lifecycle states (terminated / paused block immediately)
+        if "session-terminated" in request.scope_flags:
+            reason = "Execution denied: session has been terminated."
+            return Decision(
+                id=f"d_term_{request.id}",
+                action_id=request.id,
+                session=request.session,
+                ts=int(time.time()),
+                nonce=self.signer.generate_nonce(),
+                verdict=Verdict.DENY,
+                by=DecidedBy.RULE,
+                note=reason,
+            )
+        if "session-paused" in request.scope_flags:
+            reason = "Execution denied: session is currently paused."
+            return Decision(
+                id=f"d_paused_{request.id}",
+                action_id=request.id,
+                session=request.session,
+                ts=int(time.time()),
+                nonce=self.signer.generate_nonce(),
+                verdict=Verdict.DENY,
+                by=DecidedBy.RULE,
+                note=reason,
+            )
 
         # Sign request if unsigned
         if not request.sig:
             request.sig = self.signer.sign(request.payload_for_signature())
 
-        # 2. Local rule triage (Quick Allow for clean low-risk)
+        # 3. Local rule triage (Quick Allow for clean low-risk)
         if self.config.auto_allow_low_risk and self.evaluator.is_quick_allow(request):
             latency = (time.time() - start_time) * 1000
             evt = self.audit_logger.record_action(
@@ -873,6 +1106,9 @@ class LeashDaemonServer:
             stderr_snippet=cmd_result.stderr[:500] if cmd_result.stderr else None,
             blocked_reason=cmd_result.blocked_reason,
         )
+
+        # Feed command result to session runaway guard
+        self.session_mgr.record_action_result(request.session, request, cmd_result.exit_code)
 
         # Broadcast execution outcome to connected Phone Guard
         await self.broadcast_to_phone("execution_result", {

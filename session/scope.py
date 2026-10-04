@@ -1,42 +1,225 @@
 """
-session/scope.py - Task scope contract enforcement (N3).
+session/scope.py - Task scope contract enforcement and drift detection (N3).
 """
 from __future__ import annotations
 
 import os
+import re
+import shlex
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, Dict, List, Optional, Set
+from urllib.parse import urlparse
 
 from contracts.models import ActionRequest
 
 
 class ScopeContract:
-    """Validates that actions stay within agreed path, command, and host boundaries."""
+    """Validates that actions stay within agreed path, command, and host boundaries.
+    
+    Detects actions that drift outside the declared task scope and raises scope flags.
+    """
+
+    SENSITIVE_WATCHLIST = [
+        ".github/workflows",
+        ".gitlab-ci.yml",
+        ".circleci",
+        "Dockerfile",
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "poetry.lock",
+        "Pipfile.lock",
+        "requirements.txt",
+        ".env",
+        ".bashrc",
+        ".zshrc",
+        ".profile",
+    ]
+
+    NETWORK_COMMANDS = {"curl", "wget", "nc", "netcat", "ssh", "scp", "telnet", "ping", "ftp"}
 
     def __init__(
         self,
         allowed_paths: Optional[List[str]] = None,
         allowed_commands: Optional[List[str]] = None,
         allowed_hosts: Optional[List[str]] = None,
+        watchlist: Optional[List[str]] = None,
     ):
-        self.allowed_paths = [os.path.abspath(p) for p in (allowed_paths or ["."])]
-        self.allowed_commands = allowed_commands or []
-        self.allowed_hosts = allowed_hosts or ["localhost", "127.0.0.1"]
+        raw_paths = allowed_paths or ["."]
+        self.allowed_paths: List[str] = [
+            os.path.normcase(os.path.abspath(os.path.expanduser(p))) for p in raw_paths
+        ]
+        self.allowed_commands: List[str] = [cmd.strip() for cmd in (allowed_commands or []) if cmd.strip()]
+        self.allowed_hosts: Set[str] = {
+            h.lower().strip() for h in (allowed_hosts or ["localhost", "127.0.0.1"]) if h.strip()
+        }
+        self.watchlist = watchlist or self.SENSITIVE_WATCHLIST
+
+    def _is_path_allowed(self, path_str: str, base_dir: Optional[str] = None) -> bool:
+        """Determines if a normalized path is inside any of the allowed paths."""
+        try:
+            if not os.path.isabs(path_str):
+                base = base_dir if base_dir else os.getcwd()
+                abs_p = os.path.normcase(os.path.abspath(os.path.join(base, path_str)))
+            else:
+                abs_p = os.path.normcase(os.path.abspath(os.path.expanduser(path_str)))
+
+            for allowed in self.allowed_paths:
+                # Check exact match or subpath
+                if abs_p == allowed or abs_p.startswith(allowed.rstrip(os.sep) + os.sep):
+                    return True
+            return False
+        except Exception:
+            return False
+
+    def _extract_hosts_from_command(self, cmd_str: str) -> List[str]:
+        """Extracts hostnames or domains targeted in command strings."""
+        hosts: List[str] = []
+
+        # 1. Regex match for explicit URLs
+        url_matches = re.findall(r'(?:https?|ftp|ssh|git)://([^/\s\'":]+)', cmd_str, re.IGNORECASE)
+        for u in url_matches:
+            hosts.append(u.lower())
+
+        # 2. Host extraction for CLI tools (e.g. curl http://..., ssh user@host, ping host)
+        try:
+            tokens = shlex.split(cmd_str, posix=False)
+            for idx, token in enumerate(tokens):
+                # Clean quotes
+                clean_tok = token.strip("\"'")
+                if "@" in clean_tok and not clean_tok.startswith("-"):
+                    parts = clean_tok.split("@", 1)
+                    if parts[1] and "." in parts[1]:
+                        hosts.append(parts[1].lower())
+                elif any(clean_tok.startswith(pfx) for pfx in ("http://", "https://", "ftp://")):
+                    parsed = urlparse(clean_tok)
+                    if parsed.hostname:
+                        hosts.append(parsed.hostname.lower())
+        except Exception:
+            pass
+
+        return list(set(hosts))
+
+    def _extract_executables(self, cmd_str: str) -> List[str]:
+        """Extracts all command executables from chained pipelines or operators."""
+        # Split on standard shell operator separators
+        segments = re.split(r'\s*(?:&&|\|\||;|\|)\s*', cmd_str)
+        executables: List[str] = []
+
+        for seg in segments:
+            seg = seg.strip()
+            if not seg:
+                continue
+            try:
+                tokens = shlex.split(seg, posix=False)
+                if tokens:
+                    exe = tokens[0].strip("\"'").replace("\\", "/")
+                    base_exe = os.path.basename(exe)
+                    executables.append(base_exe.lower())
+            except Exception:
+                first = seg.split()[0].replace("\\", "/")
+                executables.append(os.path.basename(first).lower())
+
+        return executables
+
+    def _extract_path_arguments(self, cmd_str: str) -> List[str]:
+        """Identifies arguments that look like filesystem paths."""
+        paths: List[str] = []
+        try:
+            tokens = shlex.split(cmd_str, posix=False)
+            for tok in tokens[1:]:
+                clean = tok.strip("\"'")
+                # Exclude flags
+                if clean.startswith("-") or clean.startswith("/"):
+                    # On windows /? or /s is a flag, unless it's a full path
+                    if len(clean) > 2 and clean[1] == ":" or clean.startswith("//") or clean.startswith("/"):
+                        paths.append(clean)
+                elif any(sep in clean for sep in ("/", "\\")) or "." in clean:
+                    paths.append(clean)
+        except Exception:
+            pass
+        return paths
 
     def validate_action(self, request: ActionRequest) -> List[str]:
+        """Inspects an ActionRequest and returns drift flags if outside scope."""
         flags: List[str] = []
 
-        # Check path boundaries
+        # -------------------------------------------------------------
+        # 1. Path Scope & Traversal Check
+        # -------------------------------------------------------------
+        paths_to_verify: List[str] = []
         if request.target_path:
-            abs_target = os.path.abspath(request.target_path)
-            within_any = any(abs_target.startswith(allowed) for allowed in self.allowed_paths)
-            if not within_any:
-                flags.append("outside-allowed-paths")
+            paths_to_verify.append(request.target_path)
 
-        # Check command boundaries
+        if request.command:
+            extracted_paths = self._extract_path_arguments(request.command)
+            paths_to_verify.extend(extracted_paths)
+
+        base_dir = request.cwd if request.cwd and request.cwd != "." else None
+
+        for p in paths_to_verify:
+            # Traversal detection
+            if ".." in p:
+                norm = os.path.normpath(p)
+                if norm.startswith("..") or ".." in norm.split(os.sep):
+                    if "path-traversal-detected" not in flags:
+                        flags.append("path-traversal-detected")
+
+            # Check inside allowed boundaries
+            if not self._is_path_allowed(p, base_dir=base_dir):
+                if "outside-allowed-paths" not in flags:
+                    flags.append("outside-allowed-paths")
+
+            # Sensitive watchlist check
+            p_clean = p.replace("\\", "/").lower()
+            for item in self.watchlist:
+                item_clean = item.lower()
+                if item_clean in p_clean or p_clean.endswith(item_clean):
+                    if "sensitive-watchlist-hit" not in flags:
+                        flags.append("sensitive-watchlist-hit")
+                    break
+
+        # -------------------------------------------------------------
+        # 2. Command Scope Check
+        # -------------------------------------------------------------
         if request.command and self.allowed_commands:
-            first_token = request.command.strip().split()[0]
-            if first_token not in self.allowed_commands:
-                flags.append("outside-allowed-commands")
+            allowed_set = {c.lower() for c in self.allowed_commands}
+            executables = self._extract_executables(request.command)
+            for exe in executables:
+                # Strip common extensions like .exe, .bat, .sh
+                base_name = exe.rsplit(".", 1)[0] if "." in exe else exe
+                if exe not in allowed_set and base_name not in allowed_set:
+                    if "outside-allowed-commands" not in flags:
+                        flags.append("outside-allowed-commands")
+                    break
+
+        # -------------------------------------------------------------
+        # 3. Host Scope Check
+        # -------------------------------------------------------------
+        if request.command:
+            targeted_hosts = self._extract_hosts_from_command(request.command)
+            for host in targeted_hosts:
+                if host not in self.allowed_hosts:
+                    if "outside-allowed-hosts" not in flags:
+                        flags.append("outside-allowed-hosts")
+                    break
 
         return flags
+
+    def check_drift(self, request: ActionRequest) -> Dict[str, Any]:
+        """Provides detailed structured report on scope drift."""
+        flags = self.validate_action(request)
+        return {
+            "in_scope": len(flags) == 0,
+            "drift_detected": len(flags) > 0,
+            "flags": flags,
+            "allowed_paths": self.allowed_paths,
+            "allowed_commands": self.allowed_commands,
+            "allowed_hosts": list(self.allowed_hosts),
+        }
+
+    def is_in_scope(self, request: ActionRequest) -> bool:
+        """Convenience boolean check for clean scope compliance."""
+        return len(self.validate_action(request)) == 0
