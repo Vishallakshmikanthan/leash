@@ -341,6 +341,8 @@ class SessionScope:
     snapshots: List[str] = field(default_factory=list)
     terminated_at: Optional[int] = None
     termination_reason: Optional[str] = None
+    changed_files: List[Dict[str, Any]] = field(default_factory=list)
+    receipt_markdown: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         res = asdict(self)
@@ -371,6 +373,8 @@ class SessionScope:
             snapshots=data.get("snapshots", []),
             terminated_at=data.get("terminated_at"),
             termination_reason=data.get("termination_reason"),
+            changed_files=data.get("changed_files", []),
+            receipt_markdown=data.get("receipt_markdown"),
         )
 
 

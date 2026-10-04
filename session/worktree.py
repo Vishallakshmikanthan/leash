@@ -297,3 +297,134 @@ class WorktreeManager:
         except Exception as ex:
             logger.warning(f"Failed to auto-save worktree changes for {session_id}: {ex}")
             return None
+
+    def get_changed_files(self, session_id: str, base_ref: str = "HEAD") -> List[Dict[str, Any]]:
+        """
+        Inspects changed files for a session.
+        Returns a list of dicts:
+        [
+            {
+                "path": str,
+                "status": str,       # "M", "A", "D", "R", "??"
+                "status_label": str, # "Modified", "Added", "Deleted", "Renamed"
+                "additions": int,
+                "deletions": int,
+            }
+        ]
+        """
+        worktree_path = self.get_worktree_path(session_id)
+        branch_name = self.get_branch_name(session_id)
+        changed_map: Dict[str, Dict[str, Any]] = {}
+
+        def _label(code: str) -> str:
+            c = code.strip().upper()
+            if "A" in c or c == "??":
+                return "Added"
+            if "D" in c:
+                return "Deleted"
+            if "R" in c:
+                return "Renamed"
+            return "Modified"
+
+        if self._is_git_repo():
+            # 1. Inspect committed changes on session branch against base_ref
+            if self._branch_exists(branch_name):
+                try:
+                    # git diff --name-status
+                    ns_res = subprocess.run(
+                        ["git", "diff", "--name-status", f"{base_ref}..{branch_name}"],
+                        cwd=str(self.repo_root),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        check=False,
+                    )
+                    if ns_res.returncode == 0:
+                        for line in ns_res.stdout.splitlines():
+                            parts = line.strip().split("\t", 1)
+                            if len(parts) == 2:
+                                st, f_path = parts[0].strip(), parts[1].strip()
+                                changed_map[f_path] = {
+                                    "path": f_path,
+                                    "status": st,
+                                    "status_label": _label(st),
+                                    "additions": 0,
+                                    "deletions": 0,
+                                }
+
+                    # git diff --numstat
+                    num_res = subprocess.run(
+                        ["git", "diff", "--numstat", f"{base_ref}..{branch_name}"],
+                        cwd=str(self.repo_root),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        check=False,
+                    )
+                    if num_res.returncode == 0:
+                        for line in num_res.stdout.splitlines():
+                            parts = line.strip().split("\t")
+                            if len(parts) >= 3:
+                                add_s, del_s, f_path = parts[0], parts[1], parts[2]
+                                adds = int(add_s) if add_s.isdigit() else 0
+                                dels = int(del_s) if del_s.isdigit() else 0
+                                if f_path in changed_map:
+                                    changed_map[f_path]["additions"] = adds
+                                    changed_map[f_path]["deletions"] = dels
+                                else:
+                                    changed_map[f_path] = {
+                                        "path": f_path,
+                                        "status": "M",
+                                        "status_label": "Modified",
+                                        "additions": adds,
+                                        "deletions": dels,
+                                    }
+                except Exception as ex:
+                    logger.debug(f"Git diff failed for branch {branch_name}: {ex}")
+
+            # 2. Inspect any uncommitted changes in active worktree
+            if worktree_path.exists():
+                try:
+                    stat_res = subprocess.run(
+                        ["git", "status", "--porcelain"],
+                        cwd=str(worktree_path),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                        check=False,
+                    )
+                    if stat_res.returncode == 0:
+                        for line in stat_res.stdout.splitlines():
+                            line = line.strip()
+                            if not line:
+                                continue
+                            st = line[:2].strip()
+                            f_path = line[3:].strip()
+                            if f_path not in changed_map:
+                                changed_map[f_path] = {
+                                    "path": f_path,
+                                    "status": st or "M",
+                                    "status_label": _label(st or "M"),
+                                    "additions": 0,
+                                    "deletions": 0,
+                                }
+                except Exception as ex:
+                    logger.debug(f"Git status failed for worktree {worktree_path}: {ex}")
+        elif worktree_path.exists():
+            # Non-git directory isolation fallback: scan files in worktree
+            try:
+                for p in worktree_path.rglob("*"):
+                    if p.is_file():
+                        rel = str(p.relative_to(worktree_path)).replace("\\", "/")
+                        changed_map[rel] = {
+                            "path": rel,
+                            "status": "A",
+                            "status_label": "Added",
+                            "additions": 0,
+                            "deletions": 0,
+                        }
+            except Exception:
+                pass
+
+        return sorted(list(changed_map.values()), key=lambda x: x["path"])
+

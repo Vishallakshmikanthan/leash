@@ -32,6 +32,7 @@ from contracts.models import (
 from daemon.audit_logger import AuditLogger
 from daemon.config import DaemonConfig
 from daemon.policy_evaluator import PolicyEvaluator
+from daemon.receipt_builder import ReceiptBuilder
 from gates.secret_fence import CanaryManager, SecretRedactor
 from session.manager import SessionManager
 
@@ -116,6 +117,7 @@ class LeashDaemonServer:
         self.app.router.add_post("/sessions/{session_id}/pause", self._handle_post_pause_session)
         self.app.router.add_post("/sessions/{session_id}/resume", self._handle_post_resume_session)
         self.app.router.add_post("/sessions/{session_id}/terminate", self._handle_post_terminate_session)
+        self.app.router.add_get("/sessions/{session_id}/receipt", self._handle_get_session_receipt)
         self.app.router.add_post("/sessions/{session_id}/rewind", self._handle_post_rewind_session)
         self.app.router.add_get("/sessions/{session_id}/snapshots", self._handle_get_session_snapshots)
         self.app.router.add_post("/sessions/{session_id}/scope", self._handle_post_session_scope)
@@ -398,8 +400,67 @@ class LeashDaemonServer:
         if not scope:
             return web.json_response({"error": f"Session '{session_id}' not found"}, status=404)
 
+        # Generate and save Agent Receipt for session
+        events = self.audit_logger.read_session_events(session_id)
+        changed_files = self.session_mgr.get_changed_files(session_id)
+        receipt_md = ReceiptBuilder.generate_markdown(
+            session_id=session_id,
+            events=events,
+            session_scope=scope,
+            changed_files=changed_files,
+            termination_reason=reason,
+        )
+        self.session_mgr.set_session_receipt(session_id, receipt_md)
+        ReceiptBuilder.save_receipt(
+            session_id=session_id,
+            events=events,
+            output_path=self.config.receipt_output_path,
+            session_scope=scope,
+            changed_files=changed_files,
+            termination_reason=reason,
+        )
+
+        resp_dict = scope.to_dict()
+        resp_dict["receipt"] = receipt_md
+
         await self.broadcast_to_phone("session_state_changed", scope.to_dict())
-        return web.json_response(scope.to_dict())
+        await self.broadcast_to_phone("session_receipt", {
+            "session_id": session_id,
+            "receipt": receipt_md,
+            "total_actions": len(events),
+        })
+        return web.json_response(resp_dict)
+
+    async def _handle_get_session_receipt(self, request: web.Request) -> web.Response:
+        """Returns generated PR-ready Markdown receipt for the requested session."""
+        session_id = request.match_info.get("session_id", "")
+        scope = self.session_mgr.get_session(session_id)
+        events = self.audit_logger.read_session_events(session_id)
+
+        if not scope and not events:
+            return web.json_response({"error": f"Session '{session_id}' not found"}, status=404)
+
+        receipt = self.session_mgr.get_session_receipt(session_id)
+        changed_files = self.session_mgr.get_changed_files(session_id)
+        if not receipt:
+            receipt = ReceiptBuilder.generate_markdown(
+                session_id=session_id,
+                events=events,
+                session_scope=scope,
+                changed_files=changed_files,
+            )
+            self.session_mgr.set_session_receipt(session_id, receipt)
+
+        if request.headers.get("Accept") == "text/markdown":
+            return web.Response(text=receipt, content_type="text/markdown")
+
+        return web.json_response({
+            "session_id": session_id,
+            "receipt": receipt,
+            "total_actions": len(events),
+            "changed_files_count": len(changed_files),
+            "generated_at": int(time.time()),
+        })
 
     async def request_rewind(
         self, session_id: str, snapshot: Optional[str] = None, requested_by: str = "api"
@@ -950,16 +1011,66 @@ class LeashDaemonServer:
                 }))
 
             elif msg_type == "terminate_session":
-                sess_id = payload.get("session_id") or self.session_mgr.active_session_id
+                sess_id = payload.get("session_id") or self.session_mgr.active_session_id or ""
+                reason = payload.get("reason", "Terminated via phone")
                 scope = self.session_mgr.terminate_session(
-                    session_id=sess_id or "",
-                    reason=payload.get("reason", "Terminated via phone"),
+                    session_id=sess_id,
+                    reason=reason,
                     cleanup_worktree=payload.get("cleanup_worktree", True),
                     save_branch=payload.get("save_branch", True),
                 )
+                events = self.audit_logger.read_session_events(sess_id)
+                changed_files = self.session_mgr.get_changed_files(sess_id)
+                receipt_md = ReceiptBuilder.generate_markdown(
+                    session_id=sess_id,
+                    events=events,
+                    session_scope=scope,
+                    changed_files=changed_files,
+                    termination_reason=reason,
+                )
+                self.session_mgr.set_session_receipt(sess_id, receipt_md)
+                ReceiptBuilder.save_receipt(
+                    session_id=sess_id,
+                    events=events,
+                    output_path=self.config.receipt_output_path,
+                    session_scope=scope,
+                    changed_files=changed_files,
+                    termination_reason=reason,
+                )
                 await ws.send_str(json.dumps({
                     "type": "session_terminated",
-                    "payload": scope.to_dict() if scope else {},
+                    "payload": {
+                        **(scope.to_dict() if scope else {}),
+                        "receipt": receipt_md,
+                    },
+                }))
+                await self.broadcast_to_phone("session_receipt", {
+                    "session_id": sess_id,
+                    "receipt": receipt_md,
+                    "total_actions": len(events),
+                })
+
+            elif msg_type in ("get_receipt", "query_receipt"):
+                sess_id = payload.get("session_id") or self.session_mgr.active_session_id or ""
+                receipt = self.session_mgr.get_session_receipt(sess_id)
+                events = self.audit_logger.read_session_events(sess_id)
+                scope = self.session_mgr.get_session(sess_id)
+                if not receipt:
+                    changed_files = self.session_mgr.get_changed_files(sess_id)
+                    receipt = ReceiptBuilder.generate_markdown(
+                        session_id=sess_id,
+                        events=events,
+                        session_scope=scope,
+                        changed_files=changed_files,
+                    )
+                    self.session_mgr.set_session_receipt(sess_id, receipt)
+                await ws.send_str(json.dumps({
+                    "type": "session_receipt",
+                    "payload": {
+                        "session_id": sess_id,
+                        "receipt": receipt,
+                        "total_actions": len(events),
+                    }
                 }))
 
             elif msg_type == "pause_session":

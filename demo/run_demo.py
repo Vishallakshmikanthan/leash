@@ -11,6 +11,12 @@ from pathlib import Path
 # Add root directory to sys.path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 from contracts.models import ActionKind, ActionRequest, ProvenanceEvent, ProvenanceKind, Severity
 from daemon.audit_logger import AuditLogger
 from daemon.config import DaemonConfig

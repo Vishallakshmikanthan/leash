@@ -17,7 +17,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -407,6 +409,102 @@ fun SessionInfoScreen(
                 )
             }
         }
+        Spacer(modifier = Modifier.height(20.dp))
+
+        // Agent Receipt Card (N5 Feature)
+        val generatedReceipt = remember(sessionContext, guardStats, sessionActivity, timelineItems) {
+            generateSessionMarkdownReceipt(sessionContext, guardStats, sessionActivity, timelineItems)
+        }
+
+        Card(
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = LeashSurface),
+            border = androidx.compose.foundation.BorderStroke(1.dp, LeashPrimary.copy(alpha = 0.6f)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(18.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Description,
+                            contentDescription = "Agent Receipt",
+                            tint = LeashPrimary,
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "AGENT RECEIPT (PR-READY) (N5)",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = LeashPrimary,
+                            letterSpacing = 1.sp
+                        )
+                    }
+                    Surface(
+                        color = LeashPrimary.copy(alpha = 0.15f),
+                        shape = RoundedCornerShape(6.dp)
+                    ) {
+                        Text(
+                            text = "PULL REQUEST",
+                            color = LeashPrimary,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "Generate and copy a clear Markdown receipt detailing actions, approvals, denials, blocked actions, changed files, added dependencies, and outcome for your Pull Request.",
+                    color = LeashTextSecondary,
+                    fontSize = 12.sp,
+                    lineHeight = 18.sp
+                )
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            clipboardManager.setText(AnnotatedString(generatedReceipt))
+                            Toast.makeText(context, "PR Receipt copied to clipboard!", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.weight(1f).height(44.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = LeashPrimary,
+                            contentColor = Color.Black
+                        )
+                    ) {
+                        Icon(Icons.Default.ContentCopy, contentDescription = "Copy", modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Copy PR Receipt", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+
+                    OutlinedButton(
+                        onClick = { showReceiptDialog = true },
+                        modifier = Modifier.weight(1f).height(44.dp),
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = LeashCyan
+                        ),
+                        border = androidx.compose.foundation.BorderStroke(1.dp, LeashCyan)
+                    ) {
+                        Icon(Icons.Default.Visibility, contentDescription = "Preview", modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("Preview", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
     }
 
     // Rewind Confirmation Dialog
@@ -442,6 +540,136 @@ fun SessionInfoScreen(
             containerColor = LeashSurface
         )
     }
+
+    // Agent Receipt Preview Dialog
+    if (showReceiptDialog) {
+        val receiptText = remember(sessionContext, guardStats, sessionActivity, timelineItems) {
+            generateSessionMarkdownReceipt(sessionContext, guardStats, sessionActivity, timelineItems)
+        }
+        AlertDialog(
+            onDismissRequest = { showReceiptDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Description, contentDescription = "Receipt", tint = LeashPrimary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Agent Pull Request Receipt", color = LeashPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                }
+            },
+            text = {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp)
+                        .verticalScroll(rememberScrollState())
+                        .background(LeashDarkBackground, RoundedCornerShape(8.dp))
+                        .padding(12.dp)
+                ) {
+                    Text(
+                        text = receiptText,
+                        color = LeashTextPrimary,
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace,
+                        lineHeight = 16.sp
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        clipboardManager.setText(AnnotatedString(receiptText))
+                        showReceiptDialog = false
+                        Toast.makeText(context, "PR Receipt copied to clipboard!", Toast.LENGTH_SHORT).show()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = LeashPrimary, contentColor = Color.Black)
+                ) {
+                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy", modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Copy & Close", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showReceiptDialog = false }) {
+                    Text("Close", color = LeashTextSecondary)
+                }
+            },
+            containerColor = LeashSurface
+        )
+    }
+}
+
+fun generateSessionMarkdownReceipt(
+    sessionContext: SessionContext,
+    guardStats: GuardStats,
+    sessionActivity: SessionSummary?,
+    timelineItems: List<SessionActivityItem>
+): String {
+    val total = timelineItems.size
+    val allowed = timelineItems.count { it.verdict == "allow" }
+    val blocked = timelineItems.count { it.verdict == "deny" }
+    val taintedCount = timelineItems.count { it.tainted }
+    val nowStr = SimpleDateFormat("yyyy-MM-dd HH:mm:ss 'UTC'", Locale.US).format(Date())
+
+    val blockedItems = timelineItems.filter { it.verdict == "deny" }
+
+    val sb = StringBuilder()
+    sb.append("# 🛡️ Leash Agent Session Receipt: `${sessionContext.sessionId}`\n\n")
+    val outcomeBadge = if (blocked > 0) "🛡️ PROTECTED (RISKS MITIGATED)" else if (sessionContext.tainted) "⚠️ COMPLETED (TAINTED)" else "✅ CLEAN COMPLETION"
+    sb.append("> **Session Outcome:** `$outcomeBadge`  \n")
+    sb.append("> **Agent:** `${sessionContext.agentName}` | **Branch:** `leash/${sessionContext.sessionId}` | **Generated:** $nowStr\n\n")
+    sb.append("---\n\n")
+
+    sb.append("## 📊 Executive Summary\n\n")
+    sb.append("| Metric | Count | Details |\n")
+    sb.append("| :--- | :--- | :--- |\n")
+    sb.append("| **Total Actions Evaluated** | `$total` | Intercepted at shell boundary |\n")
+    sb.append("| **Approved / Allowed** | `$allowed` | Verified safe by policy |\n")
+    sb.append("| **Denied / Blocked** | `$blocked` | Prevented dangerous operations |\n")
+    sb.append("| **Tainted Invocations** | `$taintedCount` | Influenced by untrusted input |\n")
+    sb.append("| **Worktree Isolation** | `1` | `${sessionContext.worktree}` |\n\n")
+
+    sb.append("## 🎯 Session Scope & Environment\n\n")
+    sb.append("- **Worktree Path:** `${sessionContext.worktree}`\n")
+    sb.append("- **Allowed Paths:** `${sessionContext.allowedPaths.joinToString(", ")}`\n")
+    sb.append("- **Allowed Commands:** `${sessionContext.allowedCommands.joinToString(", ")}`\n")
+    sb.append("- **Provenance Status:** ${if (sessionContext.tainted) "⚠️ Tainted (${sessionContext.taintSource ?: "external input"})" else "✅ Clean"}\n\n")
+
+    sb.append("## ⛔ Blocked Actions & Security Interventions\n\n")
+    if (blockedItems.isNotEmpty()) {
+        sb.append("| Time | Attempted Action | Risk | Gate | Why Blocked |\n")
+        sb.append("| :--- | :--- | :--- | :--- | :--- |\n")
+        for (b in blockedItems) {
+            val cmdSan = b.command.replace("|", "\\|").replace("\n", " ")
+            val whySan = b.why.replace("|", "\\|").replace("\n", " ")
+            sb.append("| ${b.timestamp_iso.takeLast(8)} | `$cmdSan` | **${b.risk_severity.uppercase()}** | ${b.risk_category} | $whySan |\n")
+        }
+        sb.append("\n")
+    } else {
+        sb.append("✅ *Zero actions blocked. All agent operations complied with security policy.*\n\n")
+    }
+
+    sb.append("## 📝 Evaluated Actions Timeline\n\n")
+    sb.append("<details><summary><b>Click to expand full action timeline ($total actions)</b></summary>\n\n")
+    sb.append("| Time | Kind | Command / Target | Severity | Verdict | By | Reason |\n")
+    sb.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
+    for (act in timelineItems) {
+        val cmdSan = act.command.replace("|", "\\|").replace("\n", " ")
+        val whySan = act.why.replace("|", "\\|").replace("\n", " ")
+        sb.append("| ${act.timestamp_iso.takeLast(8)} | ${act.kind} | `$cmdSan` | ${act.risk_severity.uppercase()} | **${act.verdict.uppercase()}** | ${act.decision_method} | $whySan |\n")
+    }
+    sb.append("\n</details>\n\n")
+
+    sb.append("## 📋 Pull Request Reviewer Guidance\n\n")
+    sb.append("- [x] Interception & safety verified on-device by Leash.\n")
+    if (blocked > 0) {
+        sb.append("- [ ] Review $blocked blocked action(s) for developer intent.\n")
+    }
+    if (sessionContext.tainted) {
+        sb.append("- [ ] Note: Session was tainted; review changes for indirect prompt injection.\n")
+    }
+    sb.append("- [ ] Confirm no private keys or secrets are committed to the PR diff.\n\n")
+    sb.append("---\n*Verified by **Leash** on-device AI safety layer. Zero cloud telemetry. PR-ready receipt.*")
+
+    return sb.toString()
 }
 
 @Composable

@@ -41,6 +41,8 @@ class SessionManager:
         self.session_scopes: Dict[str, ScopeContract] = {}
         self.session_action_history: Dict[str, List[str]] = {}
         self.session_provenance_history: Dict[str, List[ProvenanceEvent]] = {}
+        self.session_changed_files: Dict[str, List[Dict[str, Any]]] = {}
+        self.session_receipts: Dict[str, str] = {}
         self.active_session_id: Optional[str] = None
 
 
@@ -258,6 +260,11 @@ class SessionManager:
 
         session.state = SessionState.TERMINATING
 
+        # Capture changed files prior to cleaning up worktree
+        changed_files = self.worktree_mgr.get_changed_files(session_id)
+        session.changed_files = changed_files
+        self.session_changed_files[session_id] = changed_files
+
         # Save any uncommitted work in the worktree
         if save_branch:
             commit_sha = self.worktree_mgr.save_worktree_changes(
@@ -265,6 +272,10 @@ class SessionManager:
             )
             if commit_sha:
                 logger.info(f"Saved worktree changes for {session_id} (commit {commit_sha[:8]})")
+                refreshed_changes = self.worktree_mgr.get_changed_files(session_id)
+                if refreshed_changes:
+                    session.changed_files = refreshed_changes
+                    self.session_changed_files[session_id] = refreshed_changes
 
         # Clean up git worktree isolation directory
         if cleanup_worktree:
@@ -283,6 +294,30 @@ class SessionManager:
 
         logger.info(f"Session {session_id} cleanly terminated ({reason})")
         return session
+
+    def get_changed_files(self, session_id: str) -> List[Dict[str, Any]]:
+        """Returns detected changed files for a session."""
+        if session_id in self.session_changed_files:
+            return list(self.session_changed_files[session_id])
+        session = self.sessions.get(session_id)
+        if session and session.changed_files:
+            return list(session.changed_files)
+        return self.worktree_mgr.get_changed_files(session_id)
+
+    def set_session_receipt(self, session_id: str, markdown: str) -> None:
+        """Saves generated receipt markdown onto session record."""
+        self.session_receipts[session_id] = markdown
+        session = self.sessions.get(session_id)
+        if session:
+            session.receipt_markdown = markdown
+
+    def get_session_receipt(self, session_id: str) -> Optional[str]:
+        """Returns cached markdown receipt if available."""
+        if session_id in self.session_receipts:
+            return self.session_receipts[session_id]
+        session = self.sessions.get(session_id)
+        return session.receipt_markdown if session else None
+
 
     def update_session_scope(
         self,

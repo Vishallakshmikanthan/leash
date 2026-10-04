@@ -20,6 +20,12 @@ from daemon.server import LeashDaemonServer
 from session.manager import SessionManager
 from shim.shell_wrapper import ShellShim
 
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 
 def cmd_pair(args: argparse.Namespace) -> None:
     config = DaemonConfig.load_default()
@@ -49,17 +55,41 @@ def cmd_pair(args: argparse.Namespace) -> None:
 def cmd_report(args: argparse.Namespace) -> None:
     config = DaemonConfig.load_default()
     audit_logger = AuditLogger(config.audit_log_path)
+    session_mgr = SessionManager(Path("."))
     session_id = args.session
 
+    if not session_id:
+        sessions = audit_logger.list_sessions()
+        if sessions:
+            session_id = sessions[0]["session_id"]
+        else:
+            print("No recorded sessions found in audit log.")
+            return
+
     events = audit_logger.read_session_events(session_id)
-    if not events:
+    scope = session_mgr.get_session(session_id)
+    changed_files = session_mgr.get_changed_files(session_id)
+
+    if not events and not scope:
         print(f"No audit events found for session: {session_id}")
         return
 
     out_file = config.receipt_output_path
-    ReceiptBuilder.save_receipt(session_id, events, out_file)
-    print(f"Report generated successfully: {out_file}")
-    print(ReceiptBuilder.generate_markdown(session_id, events))
+    ReceiptBuilder.save_receipt(
+        session_id,
+        events,
+        out_file,
+        session_scope=scope,
+        changed_files=changed_files,
+    )
+    receipt_md = ReceiptBuilder.generate_markdown(
+        session_id,
+        events,
+        session_scope=scope,
+        changed_files=changed_files,
+    )
+    print(f"Report generated successfully: {out_file}\n")
+    print(receipt_md)
 
 
 def cmd_audit(args: argparse.Namespace) -> None:
@@ -202,12 +232,30 @@ async def run_agent_session(agent_cmd: list[str], config: DaemonConfig) -> int:
     exit_code = await proc.wait()
     print(f"\n[+] Agent exited with status: {exit_code}")
 
-    # Generate receipt
+    # Cleanly terminate session & generate comprehensive receipt
+    reason = f"Agent completed with exit code {exit_code}"
+    scope = session_mgr.terminate_session(session.session_id, reason=reason, cleanup_worktree=True)
     events = audit_logger.read_session_events(session.session_id)
-    if events:
-        out_file = config.receipt_output_path
-        ReceiptBuilder.save_receipt(session.session_id, events, out_file)
-        print(f"[+] Agent receipt written to {out_file}")
+    changed_files = session_mgr.get_changed_files(session.session_id)
+    out_file = config.receipt_output_path
+
+    ReceiptBuilder.save_receipt(
+        session_id=session.session_id,
+        events=events,
+        output_path=out_file,
+        session_scope=scope,
+        changed_files=changed_files,
+        termination_reason=reason,
+    )
+    receipt_md = ReceiptBuilder.generate_markdown(
+        session_id=session.session_id,
+        events=events,
+        session_scope=scope,
+        changed_files=changed_files,
+        termination_reason=reason,
+    )
+    session_mgr.set_session_receipt(session.session_id, receipt_md)
+    print(f"[+] Agent receipt written to {out_file}")
 
     await server.stop()
     return exit_code
@@ -241,7 +289,7 @@ def main() -> None:
 
     # leash report
     report_parser = subparsers.add_parser("report", help="Generate Markdown agent receipt for PR")
-    report_parser.add_argument("--session", required=True, help="Session ID to report")
+    report_parser.add_argument("--session", default=None, help="Session ID to report (defaults to latest)")
 
     # leash audit [--session S_ID] [--sessions] [--json] [--tail N]
     audit_parser = subparsers.add_parser("audit", help="Inspect session audit log, decisions, and execution results")
