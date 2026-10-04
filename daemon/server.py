@@ -128,6 +128,7 @@ class LeashDaemonServer:
         self.app.router.add_get("/sessions/{session_id}/provenance", self._handle_get_session_provenance)
         self.app.router.add_post("/api/package-gate/allow-once", self._handle_post_package_allow_once)
         self.app.router.add_get("/api/package-gate/status", self._handle_get_package_gate_status)
+        self.app.router.add_post("/explain", self._handle_post_explain)
 
 
         # Ensure at least one session exists
@@ -804,6 +805,30 @@ class LeashDaemonServer:
             "allow_once_grants": gate.allow_once_mgr.list_grants(),
         })
 
+    async def _handle_post_explain(self, request: web.Request) -> web.Response:
+        """HTTP endpoint generating on-device or template risk explanation."""
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+        cmd = body.get("command", "")
+        cat = body.get("category", "normal-development")
+        sev = body.get("severity", "low")
+        ctx = body.get("context", {})
+        action_id = body.get("action_id")
+
+        expl = await self.evaluator.explainer.explain_async(
+            command=cmd,
+            category=cat,
+            severity=sev,
+            context=ctx,
+        )
+        resp = expl.to_dict()
+        if action_id:
+            resp["action_id"] = action_id
+        return web.json_response(resp)
+
     # -------------------------------------------------------------------------
     # WebSocket Message Processing
     # -------------------------------------------------------------------------
@@ -958,6 +983,28 @@ class LeashDaemonServer:
                             "status": "authorized",
                         }
                     }))
+
+            # 2c. On-demand Risk Explanation Request
+            elif msg_type == "explain_action":
+                cmd = payload.get("command", "")
+                cat = payload.get("category", "normal-development")
+                sev = payload.get("severity", "low")
+                ctx = payload.get("context", {})
+                action_id = payload.get("action_id")
+
+                expl = await self.evaluator.explainer.explain_async(
+                    command=cmd,
+                    category=cat,
+                    severity=sev,
+                    context=ctx,
+                )
+                await ws.send_str(json.dumps({
+                    "type": "explanation_result",
+                    "payload": {
+                        "action_id": action_id,
+                        **expl.to_dict(),
+                    }
+                }))
 
             # 3. Heartbeat / Liveness
             elif msg_type == "heartbeat":
@@ -1409,6 +1456,31 @@ class LeashDaemonServer:
         }
         await self.broadcast_to_phone("action_request", payload)
 
+        # Asynchronously compute enriched model explanation if model is active, broadcasting update without delaying verdict
+        if self.evaluator.explainer.model_runner and self.evaluator.explainer.model_runner.model_fn is not None:
+            async def _bg_enrich():
+                try:
+                    enriched = await self.evaluator.explainer.explain_async(
+                        command=request.command or request.target_path or "",
+                        category=assessment.category,
+                        severity=assessment.severity.value,
+                        context={
+                            "target_path": request.target_path,
+                            "agent": request.agent,
+                            "cwd": request.cwd,
+                            "taint_source": request.taint.source if request.taint else None,
+                            "taint_line": request.taint.line if request.taint else None,
+                            "rule_ids": assessment.rule_ids,
+                        },
+                    )
+                    await self.broadcast_to_phone("explanation_update", {
+                        "action_id": request.id,
+                        **enriched.to_dict(),
+                    })
+                except Exception as ex:
+                    logger.debug(f"Async explanation update failed: {ex}")
+
+            asyncio.create_task(_bg_enrich())
 
         # Trigger programmatic local decider if registered
         if self.local_decider is not None:

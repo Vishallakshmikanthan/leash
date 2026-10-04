@@ -30,7 +30,9 @@ import androidx.compose.ui.unit.sp
 import com.vibesync.leash.data.model.ActionBundle
 import com.vibesync.leash.data.model.ActionKind
 import com.vibesync.leash.data.model.DecidedBy
+import com.vibesync.leash.data.model.RiskExplanation
 import com.vibesync.leash.data.model.Severity
+import com.vibesync.leash.data.engine.OnDeviceRiskExplainer
 import com.vibesync.leash.ui.theme.*
 import kotlinx.coroutines.delay
 
@@ -41,6 +43,7 @@ fun ApprovalCard(
     queueIndex: Int = 1,
     queueTotal: Int = 1,
     initialTimeoutSeconds: Int = 30,
+    initialExplanation: RiskExplanation? = null,
     onNextInQueue: (() -> Unit)? = null,
     onPreviousInQueue: (() -> Unit)? = null,
     onApprove: (DecidedBy) -> Unit,
@@ -59,6 +62,25 @@ fun ApprovalCard(
         Severity.HIGH -> Color(0xFFFF5252)
         Severity.MEDIUM -> LeashWarning
         Severity.LOW -> LeashPrimary
+    }
+
+    var currentExplanation by remember(bundle.request.id, initialExplanation) {
+        mutableStateOf(
+            initialExplanation ?: OnDeviceRiskExplainer.getTemplateExplanation(
+                command = req.command ?: req.target_path ?: "",
+                category = assessment.category,
+                severity = assessment.severity.name.lowercase(),
+                context = mapOf(
+                    "target_path" to req.target_path,
+                    "taint_source" to (req.taint.source ?: assessment.taint_source),
+                    "taint_line" to (req.taint.line ?: assessment.taint_line),
+                    "existing_summary" to assessment.summary,
+                    "existing_why" to assessment.why,
+                    "existing_alternative" to assessment.safer_alternative,
+                    "action_id" to req.id
+                )
+            )
+        )
     }
 
     // Live Countdown Timer (Fail-Closed Default 30s)
@@ -469,9 +491,59 @@ fun ApprovalCard(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // Concise Summary Explanation
+            // Explanation Mode Header Badge
+            val isModelSource = currentExplanation.source == "model"
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Surface(
+                    color = if (isModelSource) LeashCyan.copy(alpha = 0.15f) else LeashPrimary.copy(alpha = 0.15f),
+                    shape = RoundedCornerShape(8.dp),
+                    border = androidx.compose.foundation.BorderStroke(
+                        1.dp,
+                        if (isModelSource) LeashCyan.copy(alpha = 0.5f) else LeashPrimary.copy(alpha = 0.5f)
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = if (isModelSource) Icons.Default.SmartToy else Icons.Default.Bolt,
+                            contentDescription = "Explanation Source",
+                            tint = if (isModelSource) LeashCyan else LeashPrimary,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Spacer(modifier = Modifier.width(5.dp))
+                        Text(
+                            text = if (isModelSource) "ON-DEVICE AI EXPLANATION" else "RULE-BASED EXPLANATION",
+                            color = if (isModelSource) LeashCyan else LeashPrimary,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
+                }
+
+                Text(
+                    text = "Enforced by Rule Engine",
+                    color = LeashTextMuted,
+                    fontSize = 10.sp,
+                    fontStyle = androidx.compose.ui.text.font.FontStyle.Italic
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            val displaySummary = currentExplanation.summary.ifBlank { assessment.summary }
+            val displayWhy = currentExplanation.why.ifBlank { assessment.why }
+            val displayAlternative = currentExplanation.saferAlternative.ifBlank { assessment.safer_alternative }
+
+            // Concise Plain-Language Summary
             Text(
-                text = assessment.summary,
+                text = displaySummary,
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
                 color = LeashTextPrimary,
@@ -480,16 +552,16 @@ fun ApprovalCard(
 
             Spacer(modifier = Modifier.height(6.dp))
 
-            // Why Danger Explanation
+            // Why It Matters / Danger Explanation
             Text(
-                text = assessment.why,
+                text = displayWhy,
                 style = MaterialTheme.typography.bodyMedium,
                 color = LeashTextSecondary,
                 lineHeight = 20.sp
             )
 
-            // Safer Alternative Box
-            if (assessment.safer_alternative.isNotBlank() && assessment.safer_alternative != "None required.") {
+            // Recommended Safer Alternative Box
+            if (displayAlternative.isNotBlank() && displayAlternative != "None required.") {
                 Spacer(modifier = Modifier.height(12.dp))
                 Surface(
                     color = LeashSurfaceVariant,
@@ -520,7 +592,7 @@ fun ApprovalCard(
                             )
                             Spacer(modifier = Modifier.height(3.dp))
                             Text(
-                                text = assessment.safer_alternative,
+                                text = displayAlternative,
                                 fontSize = 12.sp,
                                 color = LeashTextPrimary,
                                 lineHeight = 17.sp

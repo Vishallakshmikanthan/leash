@@ -29,6 +29,7 @@ from gates.package_gate import PackageGate
 from gates.provenance_tracker import ProvenanceTrackerGate
 from gates.secret_fence import SecretFenceGate
 from gates.workflow_watchlist import WorkflowWatchlistGate
+from daemon.risk_explainer import RiskExplanationEngine, StructuredExplanation
 
 
 class PolicyEvaluator:
@@ -72,6 +73,11 @@ class PolicyEvaluator:
         self.package_gate: Optional[PackageGate] = next(
             (g for g in self.gates if isinstance(g, PackageGate)), None
         )
+        self.explainer = RiskExplanationEngine()
+
+    def set_model_explainer(self, model_fn, timeout_seconds: float = 1.5) -> None:
+        """Sets or updates the model explanation provider."""
+        self.explainer.set_model_runner(model_fn, timeout_seconds=timeout_seconds)
 
     def register_rule(self, rule: BaseRule) -> None:
         """Dynamically registers an additional policy rule."""
@@ -208,8 +214,7 @@ class PolicyEvaluator:
             if "R-TAINT-INFLUENCE" not in rule_ids:
                 rule_ids.insert(0, "R-TAINT-INFLUENCE")
 
-
-        return RiskAssessment(
+        assessment = RiskAssessment(
             id=f"r_{uuid.uuid4().hex[:12]}",
             action_id=request.id,
             severity=severity,
@@ -222,3 +227,5 @@ class PolicyEvaluator:
             taint_source=request.taint.source if request.taint.tainted else None,
             taint_line=request.taint.line if request.taint.tainted else None,
         )
+
+        return self.explainer.enrich_assessment(request, assessment)

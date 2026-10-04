@@ -311,3 +311,15 @@ enum class DemoScenario(val title: String, val description: String) {
     )
 }
 
+@Serializable
+data class RiskExplanation(
+    val summary: String,
+    val why: String,
+    @SerialName("safer_alternative") val saferAlternative: String,
+    val source: String = "template",
+    @SerialName("latency_ms") val latencyMs: Float = 0f,
+    val category: String = "normal-development",
+    val severity: String = "low",
+    @SerialName("action_id") val actionId: String? = null
+)
+
