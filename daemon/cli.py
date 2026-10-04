@@ -1,13 +1,16 @@
 """
-daemon/cli.py - Leash CLI for running agent sessions, pairing, and reporting.
+daemon/cli.py - Leash CLI for running agent sessions, pairing, reporting, and command execution.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
 import json
+import logging
 import os
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 from daemon.audit_logger import AuditLogger
@@ -15,6 +18,7 @@ from daemon.config import DaemonConfig
 from daemon.receipt_builder import ReceiptBuilder
 from daemon.server import LeashDaemonServer
 from session.manager import SessionManager
+from shim.shell_wrapper import ShellShim
 
 
 def cmd_pair(args: argparse.Namespace) -> None:
@@ -54,15 +58,80 @@ def cmd_report(args: argparse.Namespace) -> None:
 
 
 async def run_server(config: DaemonConfig) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     session_mgr = SessionManager(Path("."))
     audit_logger = AuditLogger(config.audit_log_path)
     server = LeashDaemonServer(config, session_mgr, audit_logger)
     await server.start()
+    print(f"Leash Daemon server running on http://{config.host}:{config.port} (WebSocket ready)")
     try:
         while True:
             await asyncio.sleep(3600)
     except (KeyboardInterrupt, asyncio.CancelledError):
         await server.stop()
+
+
+async def run_agent_session(agent_cmd: list[str], config: DaemonConfig) -> int:
+    session_mgr = SessionManager(Path("."))
+    session = session_mgr.create_session()
+    audit_logger = AuditLogger(config.audit_log_path)
+
+    server = LeashDaemonServer(config, session_mgr, audit_logger)
+    server.default_session_id = session.session_id
+    await server.start()
+
+    print(f"[+] Leash Session Started: {session.session_id}")
+    print(f"[+] Worktree: {session.worktree_path}")
+    print(f"[+] Daemon listening on port {config.port}")
+
+    # Set environment variables for the agent subprocess
+    env = os.environ.copy()
+    env["LEASH_SESSION_ID"] = session.session_id
+    env["LEASH_DAEMON_URL"] = f"http://127.0.0.1:{config.port}"
+    env["LEASH_PORT"] = str(config.port)
+    env["LEASH_SHARED_SECRET"] = config.shared_secret
+    env["LEASH_WORKTREE"] = session.worktree_path
+
+    # Clean command args
+    if agent_cmd and agent_cmd[0] == "--":
+        agent_cmd = agent_cmd[1:]
+
+    print(f"[+] Launching agent: {' '.join(agent_cmd)}\n")
+    proc = await asyncio.create_subprocess_exec(
+        agent_cmd[0],
+        *agent_cmd[1:],
+        env=env,
+        cwd=session.worktree_path if Path(session.worktree_path).exists() else ".",
+    )
+
+    exit_code = await proc.wait()
+    print(f"\n[+] Agent exited with status: {exit_code}")
+
+    # Generate receipt
+    events = audit_logger.read_session_events(session.session_id)
+    if events:
+        out_file = config.receipt_output_path
+        ReceiptBuilder.save_receipt(session.session_id, events, out_file)
+        print(f"[+] Agent receipt written to {out_file}")
+
+    await server.stop()
+    return exit_code
+
+
+def cmd_exec(args: argparse.Namespace) -> None:
+    cmd_args = args.cmd
+    if cmd_args and cmd_args[0] == "--":
+        cmd_args = cmd_args[1:]
+    command_str = " ".join(cmd_args)
+
+    shim = ShellShim(session_id=args.session)
+    if args.json:
+        result = shim.execute(command_str)
+        print(json.dumps(result.to_dict(), indent=2))
+        sys.exit(result.exit_code)
+    else:
+        exit_code = shim.intercept_and_run(cmd_args)
+        sys.exit(exit_code)
 
 
 def main() -> None:
@@ -79,6 +148,12 @@ def main() -> None:
     report_parser = subparsers.add_parser("report", help="Generate Markdown agent receipt for PR")
     report_parser.add_argument("--session", required=True, help="Session ID to report")
 
+    # leash exec [--json] [--session S_ID] -- <command>
+    exec_parser = subparsers.add_parser("exec", help="Execute a command through the Leash interceptor")
+    exec_parser.add_argument("--json", action="store_true", help="Output JSON CommandResult")
+    exec_parser.add_argument("--session", default=None, help="Session ID")
+    exec_parser.add_argument("cmd", nargs=argparse.REMAINDER, help="Command to execute")
+
     # leash run -- <command>
     run_parser = subparsers.add_parser("run", help="Run agent in an isolated Leash session")
     run_parser.add_argument("agent_cmd", nargs=argparse.REMAINDER, help="Agent command to execute")
@@ -92,14 +167,15 @@ def main() -> None:
         asyncio.run(run_server(config))
     elif args.command == "report":
         cmd_report(args)
+    elif args.command == "exec":
+        cmd_exec(args)
     elif args.command == "run":
         if not args.agent_cmd:
             print("Error: Specify agent command after '--'. Example: leash run -- python agent.py")
             sys.exit(1)
-        print(f"Starting Leash session for command: {' '.join(args.agent_cmd)}")
-        # Start server and run command
         config = DaemonConfig.load_default()
-        asyncio.run(run_server(config))
+        exit_code = asyncio.run(run_agent_session(args.agent_cmd, config))
+        sys.exit(exit_code)
     else:
         parser.print_help()
 

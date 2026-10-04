@@ -3,9 +3,14 @@ reference-agent/agent.py - Scripted AI coding agent runner for automated tests a
 """
 from __future__ import annotations
 
+import os
 import sys
 import time
+from pathlib import Path
 from typing import List
+
+# Ensure leash root is in sys.path
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 try:
     from .scenarios import (
@@ -23,8 +28,8 @@ except ImportError:
         SCENE_4_REWIND_TEST,
         ScenarioStep,
     )
-from shim.tool_hooks import ToolHooks
 from shim.shell_wrapper import ShellShim
+from shim.tool_hooks import ToolHooks
 
 
 class ReferenceAgent:
@@ -53,9 +58,11 @@ class ReferenceAgent:
             return allowed
 
         elif step.kind == "shell" and step.command:
-            exit_code = self.shim.intercept_and_run(step.command.split())
-            print(f"  -> Shell Command Exit Code: {exit_code}")
-            return exit_code == 0
+            result = self.shim.execute(step.command)
+            print(f"  -> Shell Action Allowed: {result.allowed} (exit code: {result.exit_code})")
+            if not result.allowed:
+                print(f"  -> Blocked Reason: {result.blocked_reason}")
+            return result.allowed
 
         return False
 
@@ -64,5 +71,45 @@ class ReferenceAgent:
         for i, step in enumerate(scenario, 1):
             print(f"Step {i}/{len(scenario)}:")
             self.execute_step(step)
-            time.sleep(0.5)
+            time.sleep(0.2)
         print("--- Scenario Completed ---\n")
+
+
+def main():
+    import argparse
+    from daemon.audit_logger import AuditLogger
+    from daemon.config import DaemonConfig
+    from daemon.server import LeashDaemonServer
+    from session.manager import SessionManager
+
+    parser = argparse.ArgumentParser(description="Reference Agent Runner")
+    parser.add_argument("--scenario", choices=["1", "2", "3", "4", "all"], default="all")
+    args = parser.parse_args()
+
+    config = DaemonConfig.load_default()
+    session_mgr = SessionManager(Path("."))
+    session = session_mgr.create_session()
+    audit_logger = AuditLogger(config.audit_log_path)
+    server = LeashDaemonServer(config, session_mgr, audit_logger)
+
+    hooks = ToolHooks(session.session_id, server, session_mgr)
+    shim = ShellShim(session_id=session.session_id, daemon_server=server)
+    agent = ReferenceAgent(shim, hooks)
+
+    scenarios_map = {
+        "1": SCENE_1_INJECTION,
+        "2": SCENE_2_PACKAGE_GATE,
+        "3": SCENE_3_NORMAL_DEV,
+        "4": SCENE_4_REWIND_TEST,
+    }
+
+    if args.scenario == "all":
+        for num, sc in scenarios_map.items():
+            print(f"\n===== SCENE {num} =====")
+            agent.run_scenario(sc)
+    else:
+        agent.run_scenario(scenarios_map[args.scenario])
+
+
+if __name__ == "__main__":
+    main()

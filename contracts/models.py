@@ -145,14 +145,14 @@ class Decision:
 
     def payload_for_signature(self) -> bytes:
         clean_dict = {
-            "id": self.id,
             "action_id": self.action_id,
+            "by": self.by.value if isinstance(self.by, DecidedBy) else self.by,
+            "id": self.id,
+            "nonce": self.nonce,
+            "note": self.note or "",
             "session": self.session,
             "ts": self.ts,
-            "nonce": self.nonce,
             "verdict": self.verdict.value if isinstance(self.verdict, Verdict) else self.verdict,
-            "by": self.by.value if isinstance(self.by, DecidedBy) else self.by,
-            "note": self.note,
         }
         return json.dumps(clean_dict, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -174,6 +174,44 @@ class Decision:
             by=DecidedBy(data["by"]),
             note=data.get("note"),
             sig=data.get("sig", ""),
+        )
+
+
+@dataclass
+class CommandResult:
+    action_id: str
+    session_id: str
+    verdict: Verdict
+    allowed: bool
+    exit_code: int
+    stdout: str
+    stderr: str
+    blocked_reason: Optional[str] = None
+    risk_assessment: Optional[RiskAssessment] = None
+    duration_ms: float = 0.0
+
+    def to_dict(self) -> Dict[str, Any]:
+        res = asdict(self)
+        res["verdict"] = self.verdict.value if isinstance(self.verdict, Verdict) else self.verdict
+        if self.risk_assessment:
+            res["risk_assessment"] = self.risk_assessment.to_dict()
+        return res
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> CommandResult:
+        assessment_raw = data.get("risk_assessment")
+        assessment = RiskAssessment.from_dict(assessment_raw) if assessment_raw else None
+        return cls(
+            action_id=data["action_id"],
+            session_id=data["session_id"],
+            verdict=Verdict(data["verdict"]),
+            allowed=bool(data["allowed"]),
+            exit_code=int(data["exit_code"]),
+            stdout=data.get("stdout", ""),
+            stderr=data.get("stderr", ""),
+            blocked_reason=data.get("blocked_reason"),
+            risk_assessment=assessment,
+            duration_ms=float(data.get("duration_ms", 0.0)),
         )
 
 

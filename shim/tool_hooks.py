@@ -4,6 +4,7 @@ shim/tool_hooks.py - Tool-level callbacks for intercepting file reads, edits, an
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import time
 import uuid
 from typing import Any, Dict, Optional
@@ -30,8 +31,19 @@ class ToolHooks:
         self.server = server
         self.session_mgr = session_mgr
 
-    def on_pre_file_read(self, file_path: str) -> bool:
-        """Called before agent reads a file. Checks Secret Fence and tracks provenance."""
+    def _run_sync(self, coro):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+
+        if loop and loop.is_running():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(asyncio.run, coro).result()
+        return asyncio.run(coro)
+
+    async def async_on_pre_file_read(self, file_path: str) -> bool:
+        """Async callback before agent reads a file."""
         # 1. Check for untrusted read (F1 provenance)
         filename = file_path.split("/")[-1].split("\\")[-1]
         if filename in self.UNTRUSTED_SOURCES:
@@ -58,11 +70,15 @@ class ToolHooks:
             agent="agent-tool-hook",
             cwd=".",
         )
-        decision = asyncio.run(self.server.submit_action(req))
+        decision = await self.server.submit_action(req)
         return decision.verdict == Verdict.ALLOW
 
-    def on_pre_file_edit(self, file_path: str, new_content: str) -> bool:
-        """Called before agent edits or writes to a file."""
+    def on_pre_file_read(self, file_path: str) -> bool:
+        """Synchronous wrapper for on_pre_file_read."""
+        return self._run_sync(self.async_on_pre_file_read(file_path))
+
+    async def async_on_pre_file_edit(self, file_path: str, new_content: str) -> bool:
+        """Async callback before agent edits or writes to a file."""
         req = ActionRequest(
             id=f"a_{uuid.uuid4().hex[:12]}",
             session=self.session_id,
@@ -73,11 +89,15 @@ class ToolHooks:
             agent="agent-tool-hook",
             cwd=".",
         )
-        decision = asyncio.run(self.server.submit_action(req))
+        decision = await self.server.submit_action(req)
         return decision.verdict == Verdict.ALLOW
 
-    def on_pre_tool_call(self, tool_name: str, tool_args: Dict[str, Any]) -> bool:
-        """Called before agent executes a tool function."""
+    def on_pre_file_edit(self, file_path: str, new_content: str) -> bool:
+        """Synchronous wrapper for on_pre_file_edit."""
+        return self._run_sync(self.async_on_pre_file_edit(file_path, new_content))
+
+    async def async_on_pre_tool_call(self, tool_name: str, tool_args: Dict[str, Any]) -> bool:
+        """Async callback before agent executes a tool function."""
         req = ActionRequest(
             id=f"a_{uuid.uuid4().hex[:12]}",
             session=self.session_id,
@@ -89,5 +109,9 @@ class ToolHooks:
             agent="agent-tool-hook",
             cwd=".",
         )
-        decision = asyncio.run(self.server.submit_action(req))
+        decision = await self.server.submit_action(req)
         return decision.verdict == Verdict.ALLOW
+
+    def on_pre_tool_call(self, tool_name: str, tool_args: Dict[str, Any]) -> bool:
+        """Synchronous wrapper for on_pre_tool_call."""
+        return self._run_sync(self.async_on_pre_tool_call(tool_name, tool_args))

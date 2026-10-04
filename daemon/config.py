@@ -20,6 +20,9 @@ class DaemonConfig:
     timeout_seconds: int = 30
     fail_closed_high_risk: bool = True
     auto_allow_low_risk: bool = True
+    dev_mode: bool = False
+    allow_unsigned_local: bool = True
+    local_approval_channel: bool = True
     allow_command_patterns: List[str] = field(default_factory=lambda: [
         "pytest",
         "npm test",
@@ -28,10 +31,10 @@ class DaemonConfig:
         "git status",
         "git diff",
         "git log",
+        "git --version",
+        "python --version",
         "ls",
         "pwd",
-        "cat",
-        "echo",
         "ruff",
         "flake8",
         "black",

@@ -15,6 +15,7 @@ from contracts.models import (
     SnapshotRef,
     SessionScope,
     AuditEvent,
+    CommandResult,
 )
 from contracts.crypto import LeashSigner
 
@@ -27,6 +28,7 @@ __all__ = [
     "TaintContext",
     "ActionRequest",
     "Decision",
+    "CommandResult",
     "RiskAssessment",
     "ProvenanceEvent",
     "SnapshotRef",

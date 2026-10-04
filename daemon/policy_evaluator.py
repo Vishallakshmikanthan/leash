@@ -32,7 +32,7 @@ class PolicyEvaluator:
 
     def __init__(self, allow_command_patterns: Optional[List[str]] = None):
         self.allow_patterns = allow_command_patterns or [
-            "pytest", "npm test", "npm run test", "cargo test", "git status", "git diff", "git log", "ls", "pwd", "echo"
+            "pytest", "npm test", "npm run test", "cargo test", "git status", "git diff", "git log", "git --version", "python --version", "ls", "pwd", "ruff", "flake8", "black"
         ]
         self.gates: List[BaseGate] = [
             SecretFenceGate(),
@@ -42,11 +42,21 @@ class PolicyEvaluator:
         ]
 
     def is_quick_allow(self, request: ActionRequest) -> bool:
-        if request.taint.tainted:
+        if request.taint.tainted or request.scope_flags:
             return False
 
         if request.kind == ActionKind.SHELL and request.command:
             cmd = request.command.strip()
+            # If compound command with pipes, chaining, or redirections, never quick-allow
+            if any(char in cmd for char in ["|", ";", "&", ">", "<", "`", "$"]):
+                return False
+
+            # Check if any security gate flags it
+            for gate in self.gates:
+                res = gate.evaluate(request)
+                if res and res.triggered:
+                    return False
+
             for pattern in self.allow_patterns:
                 if cmd == pattern or cmd.startswith(pattern + " "):
                     return True
