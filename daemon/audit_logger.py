@@ -396,11 +396,13 @@ class AuditLogger:
                 "decisions_by_method": {},
                 "severity_breakdown": {},
                 "timeline": [],
+                "rewinds": [],
             }
 
         actions: Dict[str, Dict[str, Any]] = {}
         ordered_action_ids: List[str] = []
         exec_map: Dict[str, Dict[str, Any]] = {}
+        rewinds: List[Dict[str, Any]] = []
 
         agent_name = "unknown"
         worktree_path = None
@@ -426,6 +428,19 @@ class AuditLogger:
                     actions[act_id].update(ev)
             elif ev_type == "action_executed" and act_id:
                 exec_map[act_id] = ev.get("execution_result") or {}
+            elif ev_type == "rewind":
+                meta = ev.get("metadata") or {}
+                rewinds.append({
+                    "rewind_id": act_id,
+                    "ts": ev.get("ts", 0),
+                    "verdict": ev.get("verdict"),
+                    "decided_by": ev.get("decided_by"),
+                    "snapshot_ref": meta.get("snapshot_ref"),
+                    "snapshot_action_id": meta.get("snapshot_action_id"),
+                    "restored": meta.get("restored", False),
+                    "note": meta.get("note"),
+                    "scope_notice": meta.get("scope_notice"),
+                })
 
         # Merge execution results into action evaluations
         timeline: List[Dict[str, Any]] = []
@@ -511,4 +526,5 @@ class AuditLogger:
             "decisions_by_method": methods,
             "severity_breakdown": severities,
             "timeline": timeline,
+            "rewinds": rewinds,
         }

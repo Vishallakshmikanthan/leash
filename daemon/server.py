@@ -401,21 +401,162 @@ class LeashDaemonServer:
         await self.broadcast_to_phone("session_state_changed", scope.to_dict())
         return web.json_response(scope.to_dict())
 
+    async def request_rewind(
+        self, session_id: str, snapshot: Optional[str] = None, requested_by: str = "api"
+    ) -> Dict[str, Any]:
+        """Guard-controlled Rewind: requires explicit approval, then restores repository files.
+
+        `snapshot` is a git ref or an action ID. Fails closed when no decision channel exists
+        or when the Guard denies / times out. Every outcome is written to the audit log.
+        """
+        from session.snapshot import REWIND_SCOPE_NOTICE
+
+        session = self.session_mgr.get_session(session_id)
+        if not session:
+            return {"status": "error", "code": 404, "error": f"Session '{session_id}' not found"}
+
+        snap = self.session_mgr.resolve_snapshot(session_id, snapshot)
+        if not snap:
+            return {"status": "error", "code": 404, "error": "No matching snapshot found"}
+
+        rewind_id = f"rw_{uuid.uuid4().hex[:12]}"
+        base_meta = {
+            "snapshot_ref": snap.git_ref,
+            "snapshot_action_id": snap.action_id,
+            "snapshot_commit": snap.commit_sha,
+            "requested_by": requested_by,
+            "scope_notice": REWIND_SCOPE_NOTICE,
+        }
+
+        def _audit(verdict: str, decided_by: str, extra: Dict[str, Any]) -> Any:
+            meta = dict(base_meta)
+            meta.update(extra)
+            return self.audit_logger.record_event(
+                event_type="rewind",
+                session_id=session_id,
+                action_id=rewind_id,
+                kind="rewind",
+                verdict=verdict,
+                risk_severity="high",
+                decided_by=decided_by,
+                target_path=snap.git_ref,
+                agent=session.agent,
+                worktree=session.worktree_path,
+                tainted=session.tainted,
+                metadata=meta,
+            )
+
+        if not self.has_decision_channel():
+            _audit("deny", DecidedBy.TIMEOUT.value, {"note": "No Guard channel: Rewind failed closed."})
+            return {"status": "denied", "code": 403, "error": "No Guard decision channel: Rewind denied."}
+
+        rewind_req = ActionRequest(
+            id=rewind_id,
+            session=session_id,
+            ts=int(time.time()),
+            nonce=self.signer.generate_nonce(),
+            kind=ActionKind.GIT,
+            agent=session.agent,
+            cwd=session.worktree_path,
+            command=f"leash rewind {snap.git_ref}",
+            target_path=snap.git_ref,
+            worktree=session.worktree_path,
+            scope_flags=["rewind"],
+        )
+        rewind_req.sig = self.signer.sign(rewind_req.payload_for_signature())
+        assessment = RiskAssessment(
+            id=f"r_{rewind_id}",
+            action_id=rewind_id,
+            severity=Severity.HIGH,
+            category="rewind",
+            rule_ids=["R-REWIND"],
+            summary=f"Restore repository files to snapshot '{snap.description}'.",
+            why=(
+                "Rewind overwrites current repository files and removes new untracked files. "
+                + REWIND_SCOPE_NOTICE
+            ),
+            safer_alternative="Review the session diff first. A backup of the current state is saved before Rewind.",
+        )
+
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[Decision] = loop.create_future()
+        self.pending_decisions[rewind_id] = fut
+        self.pending_metadata[rewind_id] = {
+            "request": rewind_req,
+            "assessment": assessment,
+            "start_time": time.time(),
+            "snapshot_ref": snap.git_ref,
+        }
+
+        await self.broadcast_to_phone(
+            "action_request",
+            {"request": rewind_req.to_dict(), "assessment": assessment.to_dict(), "rewind": snap.to_dict()},
+        )
+
+        if self.local_decider is not None:
+            async def _invoke_local_decider() -> None:
+                try:
+                    res = self.local_decider(rewind_req, assessment)
+                    dec = await res if inspect.isawaitable(res) else res
+                    if rewind_id in self.pending_decisions and not fut.done():
+                        fut.set_result(dec)
+                except Exception as ex:
+                    logger.error(f"Error in local decider callback: {ex}")
+
+            asyncio.create_task(_invoke_local_decider())
+
+        try:
+            decision = await asyncio.wait_for(fut, timeout=self.config.timeout_seconds)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            decision = Decision(
+                id=f"d_timeout_{rewind_id}",
+                action_id=rewind_id,
+                session=session_id,
+                ts=int(time.time()),
+                nonce=self.signer.generate_nonce(),
+                verdict=Verdict.DENY,
+                by=DecidedBy.TIMEOUT,
+                note=f"Timed out after {self.config.timeout_seconds}s waiting for Rewind approval.",
+            )
+        finally:
+            self.pending_decisions.pop(rewind_id, None)
+            self.pending_metadata.pop(rewind_id, None)
+
+        if decision.verdict != Verdict.ALLOW:
+            _audit("deny", decision.by.value, {"note": decision.note})
+            return {"status": "denied", "code": 403, "error": decision.note or "Rewind denied by Guard."}
+
+        ok = await asyncio.to_thread(self.session_mgr.rewind, session_id, snap.git_ref)
+        _audit(
+            "allow" if ok else "error",
+            decision.by.value,
+            {"note": decision.note, "restored": ok, "rollback": True},
+        )
+        result = {
+            "status": "ok" if ok else "error",
+            "code": 200 if ok else 500,
+            "session_id": session_id,
+            "rewind_id": rewind_id,
+            "git_ref": snap.git_ref,
+            "action_id": snap.action_id,
+            "rewound": ok,
+            "scope_notice": REWIND_SCOPE_NOTICE,
+        }
+        if not ok:
+            result["error"] = "Rewind could not restore the repository."
+        await self.broadcast_to_phone("rewind_executed", {**result, "success": ok})
+        return result
+
     async def _handle_post_rewind_session(self, request: web.Request) -> web.Response:
         session_id = request.match_info.get("session_id", "")
         try:
             body = await request.json()
         except Exception:
             body = {}
-        git_ref = body.get("git_ref")
-        ok = self.session_mgr.rewind(session_id, git_ref)
-        if not ok:
-            return web.json_response({"error": f"Rewind failed for session '{session_id}'"}, status=400)
-
-        await self.broadcast_to_phone("rewind_executed", {
-            "session_id": session_id, "git_ref": git_ref, "success": True
-        })
-        return web.json_response({"status": "ok", "session_id": session_id, "rewound": True})
+        target = body.get("git_ref") or body.get("action_id") or body.get("snapshot")
+        result = await self.request_rewind(session_id, target, requested_by="http")
+        code = result.pop("code", 200)
+        return web.json_response(result, status=code)
 
     async def _handle_get_session_snapshots(self, request: web.Request) -> web.Response:
         session_id = request.match_info.get("session_id", "")
@@ -839,12 +980,21 @@ class LeashDaemonServer:
 
             elif msg_type in ("rewind", "rewind_session"):
                 sess_id = payload.get("session_id") or self.session_mgr.active_session_id
-                git_ref = payload.get("git_ref")
-                ok = self.session_mgr.rewind(sess_id or "", git_ref)
-                await ws.send_str(json.dumps({
-                    "type": "rewind_result",
-                    "payload": {"session_id": sess_id, "git_ref": git_ref, "success": ok},
-                }))
+                target = payload.get("git_ref") or payload.get("action_id") or payload.get("snapshot")
+
+                async def _run_rewind(s_id: str, tgt: Optional[str], sock: web.WebSocketResponse) -> None:
+                    res = await self.request_rewind(s_id, tgt, requested_by="phone")
+                    res.pop("code", None)
+                    try:
+                        await sock.send_str(json.dumps({
+                            "type": "rewind_result",
+                            "payload": {**res, "success": bool(res.get("rewound"))},
+                        }))
+                    except Exception:
+                        pass
+
+                # Run as a task: the approval decision arrives on this same socket.
+                asyncio.create_task(_run_rewind(sess_id or "", target, ws))
 
             elif msg_type == "get_session_details":
                 sess_id = payload.get("session_id") or self.session_mgr.active_session_id
@@ -1076,14 +1226,8 @@ class LeashDaemonServer:
                 note="Safe standard development action allowed by rule.",
             )
 
-        # 5. Pre-action snapshot for High risk
+        # 5. Snapshot is taken after approval (see below), only for risky actions that are allowed.
         snapshot_ref = None
-        if assessment.severity in (Severity.HIGH, Severity.CRITICAL):
-            snapshot = self.session_mgr.create_pre_action_snapshot(
-                request.session, f"Pre-action snapshot for {request.id}: {request.command or request.kind.value}"
-            )
-            if snapshot:
-                snapshot_ref = snapshot.git_ref
 
         # 6. Check if decision channel is available (Fail Closed if unavailable)
         channel_available = self.has_decision_channel()
@@ -1186,6 +1330,19 @@ class LeashDaemonServer:
         finally:
             self.pending_decisions.pop(request.id, None)
             self.pending_metadata.pop(request.id, None)
+
+        # 8. Pre-action snapshot for approved risky actions (taken right before execution)
+        if decision.verdict == Verdict.ALLOW and (
+            assessment.severity != Severity.LOW or taint.tainted
+        ):
+            snapshot = await asyncio.to_thread(
+                self.session_mgr.create_pre_action_snapshot,
+                request.session,
+                f"Pre-action snapshot for {request.id}: {request.command or request.kind.value}",
+                request.id,
+            )
+            if snapshot:
+                snapshot_ref = snapshot.git_ref
 
         latency = (time.time() - start_time) * 1000
         evt = self.audit_logger.record_action(

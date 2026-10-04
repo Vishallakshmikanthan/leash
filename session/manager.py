@@ -346,32 +346,50 @@ class SessionManager:
         self.provenance_tracker.configure_untrusted_sources(sources)
 
 
-    def create_pre_action_snapshot(self, session_id: str, desc: str) -> Optional[SnapshotRef]:
+    def create_pre_action_snapshot(
+        self, session_id: str, desc: str, action_id: Optional[str] = None
+    ) -> Optional[SnapshotRef]:
         """Creates a point-in-time hidden Git ref snapshot before a risky operation."""
         session = self.sessions.get(session_id)
         worktree_path = Path(session.worktree_path) if session else None
-        snapshot = self.snapshot_mgr.create_snapshot(session_id, desc, worktree_path=worktree_path)
+        snapshot = self.snapshot_mgr.create_snapshot(
+            session_id, desc, worktree_path=worktree_path, action_id=action_id
+        )
         if snapshot and session:
             session.snapshots.append(snapshot.git_ref)
         return snapshot
 
+    def resolve_snapshot(self, session_id: str, ref_or_action: Optional[str] = None) -> Optional[SnapshotRef]:
+        """Resolves a snapshot by git ref or action ID; defaults to the latest snapshot."""
+        if ref_or_action:
+            return self.snapshot_mgr.get_snapshot(session_id, ref_or_action)
+        return self.snapshot_mgr.get_latest_snapshot(session_id)
+
     def rewind(self, session_id: str, git_ref: Optional[str] = None) -> bool:
-        """Restores repository or worktree tracked files to snapshot state."""
+        """Restores repository or worktree files to snapshot state (repository files only)."""
         session = self.sessions.get(session_id)
-        target_ref = git_ref
-        if not target_ref:
-            if session and session.snapshots:
-                target_ref = session.snapshots[-1]
-            else:
-                latest = self.snapshot_mgr.get_latest_snapshot(session_id)
-                if latest:
-                    target_ref = latest.git_ref
+        snap = self.resolve_snapshot(session_id, git_ref)
+        target_ref = snap.git_ref if snap else git_ref
+        if not target_ref and session and session.snapshots:
+            target_ref = session.snapshots[-1]
 
         if not target_ref:
             return False
+        # Never rewind to a ref outside this session's namespace.
+        if not target_ref.startswith(f"refs/leash/{session_id}/"):
+            return False
 
+        if session and session.worktree_path and not Path(session.worktree_path).exists():
+            return False  # never fall back to rewinding the main repository
         worktree_path = Path(session.worktree_path) if session else None
-        return self.snapshot_mgr.rewind_to_snapshot(target_ref, worktree_path=worktree_path)
+        ok = self.snapshot_mgr.rewind_to_snapshot(
+            target_ref, worktree_path=worktree_path, backup_session_id=session_id
+        )
+        if ok:
+            # Snapshots taken after the target describe a state that no longer exists in the tree,
+            # but they stay available as history.
+            logger.info(f"Session {session_id} rewound to {target_ref}")
+        return ok
 
     def list_snapshots(self, session_id: str) -> List[SnapshotRef]:
         """Lists snapshots captured for the given session."""

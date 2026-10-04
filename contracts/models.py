@@ -317,6 +317,7 @@ class SnapshotRef:
     commit_sha: str
     created_at: int
     description: str
+    action_id: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
