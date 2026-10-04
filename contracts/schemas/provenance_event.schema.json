@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ProvenanceEvent",
+  "type": "object",
+  "required": ["id", "session", "kind", "source", "sig"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^p_[a-zA-Z0-9_-]+$" },
+    "session": { "type": "string", "pattern": "^s_[a-zA-Z0-9_-]+$" },
+    "ts": { "type": "integer" },
+    "kind": { 
+      "type": "string", 
+      "enum": ["untrusted_read", "hidden_text_detected", "canary_read", "prompt_injection_suspected"] 
+    },
+    "source": { "type": "string" },
+    "line": { "type": ["integer", "null"] },
+    "flags": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "snippet": { "type": ["string", "null"] },
+    "sig": { "type": "string" }
+  },
+  "additionalProperties": false
+}

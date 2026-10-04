@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RiskAssessment",
+  "type": "object",
+  "required": ["id", "action_id", "severity", "category", "rule_ids", "summary", "why", "safer_alternative"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^r_[a-zA-Z0-9_-]+$" },
+    "action_id": { "type": "string", "pattern": "^a_[a-zA-Z0-9_-]+$" },
+    "severity": { 
+      "type": "string", 
+      "enum": ["low", "medium", "high", "critical"] 
+    },
+    "category": { "type": "string" },
+    "rule_ids": { 
+      "type": "array", 
+      "items": { "type": "string" } 
+    },
+    "summary": { "type": "string" },
+    "why": { "type": "string" },
+    "safer_alternative": { "type": "string" },
+    "tainted_escalation": { "type": "boolean" },
+    "taint_source": { "type": ["string", "null"] },
+    "taint_line": { "type": ["integer", "null"] }
+  },
+  "additionalProperties": false
+}

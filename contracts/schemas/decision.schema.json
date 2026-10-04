@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Decision",
+  "type": "object",
+  "required": ["id", "action_id", "session", "ts", "nonce", "verdict", "by", "sig"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^d_[a-zA-Z0-9_-]+$" },
+    "action_id": { "type": "string", "pattern": "^a_[a-zA-Z0-9_-]+$" },
+    "session": { "type": "string", "pattern": "^s_[a-zA-Z0-9_-]+$" },
+    "ts": { "type": "integer" },
+    "nonce": { "type": "string" },
+    "verdict": { 
+      "type": "string", 
+      "enum": ["allow", "deny"] 
+    },
+    "by": { 
+      "type": "string", 
+      "enum": ["biometric", "tap", "auto", "timeout", "rule"] 
+    },
+    "note": { "type": ["string", "null"] },
+    "sig": { "type": "string" }
+  },
+  "additionalProperties": false
+}

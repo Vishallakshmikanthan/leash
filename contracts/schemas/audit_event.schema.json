@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AuditEvent",
+  "type": "object",
+  "required": ["event_id", "session_id", "ts", "event_type", "action_id", "verdict", "risk_severity"],
+  "properties": {
+    "event_id": { "type": "string", "pattern": "^evt_[a-zA-Z0-9_-]+$" },
+    "session_id": { "type": "string", "pattern": "^s_[a-zA-Z0-9_-]+$" },
+    "ts": { "type": "integer" },
+    "event_type": { 
+      "type": "string", 
+      "enum": ["action_evaluated", "action_allowed", "action_blocked", "session_started", "session_ended", "snapshot_created", "snapshot_restored", "taint_marked"] 
+    },
+    "action_id": { "type": "string" },
+    "kind": { "type": "string" },
+    "command": { "type": ["string", "null"] },
+    "target_path": { "type": ["string", "null"] },
+    "risk_severity": { "type": "string" },
+    "risk_category": { "type": ["string", "null"] },
+    "verdict": { "type": "string" },
+    "decided_by": { "type": "string" },
+    "latency_ms": { "type": ["number", "null"] },
+    "snapshot_ref": { "type": ["string", "null"] },
+    "tainted": { "type": "boolean" },
+    "metadata": { "type": "object" }
+  },
+  "additionalProperties": false
+}

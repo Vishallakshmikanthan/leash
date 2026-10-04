@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "leash"
+version = "0.1.0"
+description = "A phone-based safety layer for AI coding agents"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "pydantic>=2.0.0",
+]
+
+[project.scripts]
+leash = "daemon.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["contracts*", "daemon*", "shim*", "gates*", "session*", "reference-agent*"]

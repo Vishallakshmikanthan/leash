@@ -1,0 +1,13 @@
+{
+  "id": "r_01H9A3X8K9L1M2N3",
+  "action_id": "a_01H9A3X7B4C2D1E0",
+  "severity": "high",
+  "category": "remote-script-execution",
+  "rule_ids": ["R-NET-PIPE-SH"],
+  "summary": "This downloads a script from the internet and runs it immediately.",
+  "why": "You cannot see what the script does before it runs.",
+  "safer_alternative": "Download it first, read it, then run it.",
+  "tainted_escalation": true,
+  "taint_source": "README.md",
+  "taint_line": 12
+}

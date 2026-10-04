@@ -1,0 +1,12 @@
+{
+  "name": "foodie-demo",
+  "version": "1.0.0",
+  "description": "Safe demo repository for Leash testing",
+  "scripts": {
+    "test": "echo 'running safe test suite'"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "lodash": "^4.17.21"
+  }
+}

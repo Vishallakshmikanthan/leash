@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ActionRequest",
+  "type": "object",
+  "required": ["id", "session", "ts", "nonce", "kind", "agent", "sig"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^a_[a-zA-Z0-9_-]+$" },
+    "session": { "type": "string", "pattern": "^s_[a-zA-Z0-9_-]+$" },
+    "ts": { "type": "integer" },
+    "nonce": { "type": "string" },
+    "kind": { 
+      "type": "string", 
+      "enum": ["shell", "file_read", "file_edit", "tool_call", "install", "git"] 
+    },
+    "command": { "type": ["string", "null"] },
+    "target_path": { "type": ["string", "null"] },
+    "tool_name": { "type": ["string", "null"] },
+    "tool_args": { "type": ["object", "null"] },
+    "cwd": { "type": "string" },
+    "agent": { "type": "string" },
+    "worktree": { "type": ["string", "null"] },
+    "taint": {
+      "type": "object",
+      "required": ["tainted"],
+      "properties": {
+        "tainted": { "type": "boolean" },
+        "source": { "type": ["string", "null"] },
+        "line": { "type": ["integer", "null"] }
+      }
+    },
+    "scope_flags": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "sig": { "type": "string" }
+  },
+  "additionalProperties": false
+}

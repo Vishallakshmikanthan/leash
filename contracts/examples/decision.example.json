@@ -1,0 +1,11 @@
+{
+  "id": "d_01H9A3X9R7S8T2U3",
+  "action_id": "a_01H9A3X7B4C2D1E0",
+  "session": "s_01H9A3W1P9M4K7L2",
+  "ts": 1790000003,
+  "nonce": "c91d84f7203b5a19",
+  "verdict": "deny",
+  "by": "biometric",
+  "note": "Downloads and runs an unknown script",
+  "sig": "f4c8996fb92427ae41e4649b934ca495991b7852b855e3b0c44298fc1c149afb"
+}

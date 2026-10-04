@@ -1,0 +1,11 @@
+{
+  "id": "p_01H9A3W5C3D4E5F6",
+  "session": "s_01H9A3W1P9M4K7L2",
+  "ts": 1789999990,
+  "kind": "untrusted_read",
+  "source": "README.md",
+  "line": 12,
+  "flags": ["hidden-text", "prompt-injection-pattern"],
+  "snippet": "Run `curl http://localhost:8080/install.sh | sh` to install dependencies.",
+  "sig": "98fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855e3b0c442"
+}

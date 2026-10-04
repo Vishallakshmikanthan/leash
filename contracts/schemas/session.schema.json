@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SessionScope",
+  "type": "object",
+  "required": ["session_id", "created_at", "worktree_path", "repo_path"],
+  "properties": {
+    "session_id": { "type": "string", "pattern": "^s_[a-zA-Z0-9_-]+$" },
+    "created_at": { "type": "integer" },
+    "worktree_path": { "type": "string" },
+    "repo_path": { "type": "string" },
+    "allowed_paths": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "allowed_commands": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "allowed_hosts": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "tainted": { "type": "boolean" },
+    "taint_events": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "snapshots": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": false
+}

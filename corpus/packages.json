@@ -1,0 +1,25 @@
+{
+  "popular": [
+    "requests",
+    "flask",
+    "django",
+    "numpy",
+    "pandas",
+    "pytest",
+    "scipy",
+    "react",
+    "express",
+    "lodash",
+    "axios",
+    "typescript",
+    "chalk",
+    "webpack"
+  ],
+  "typosquats": [
+    {"input": "requsts", "target": "requests", "threat": "infostealer"},
+    {"input": "falsk", "target": "flask", "threat": "reverse_shell"},
+    {"input": "djagno", "target": "django", "threat": "credential_logger"},
+    {"input": "lodsh", "target": "lodash", "threat": "data_exfil"},
+    {"input": "exppress", "target": "express", "threat": "backdoor"}
+  ]
+}
