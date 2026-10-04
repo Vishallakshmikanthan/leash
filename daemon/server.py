@@ -1353,6 +1353,55 @@ class LeashDaemonServer:
                 )
             )
 
+        # Immediate Hidden Text Alert handling
+        if assessment.category in ("hidden-text-detected", "hidden-text") or any(r.startswith("R-TXT-") for r in assessment.rule_ids):
+            txt_target = request.target_path or request.command or "file"
+            primary_line = assessment.taint_line or 1
+            primary_pattern = assessment.summary
+            risk_why = assessment.why
+
+            self.audit_logger.record_hidden_text_event(
+                session_id=request.session,
+                action_id=request.id,
+                file_path=txt_target,
+                line=primary_line,
+                pattern_name=primary_pattern,
+                risk_reason=risk_why,
+                snippet=request.command or request.target_path,
+                severity=assessment.severity.value,
+                verdict="deny" if assessment.severity in (Severity.HIGH, Severity.CRITICAL) else "review",
+                decided_by="hidden_text_scanner",
+                agent=request.agent,
+                worktree=request.worktree,
+                metadata={"rule_ids": assessment.rule_ids, "why": assessment.why},
+            )
+            p_hidden = ProvenanceEvent(
+                id=f"p_txt_{uuid.uuid4().hex[:8]}",
+                session=request.session,
+                ts=int(time.time()),
+                kind=ProvenanceKind.HIDDEN_TEXT_DETECTED,
+                source=txt_target,
+                line=primary_line,
+                flags=["hidden-text", "security-alert"],
+                snippet=assessment.summary,
+            )
+            self.session_mgr.record_provenance_event(p_hidden)
+            asyncio.create_task(
+                self.broadcast_to_phone(
+                    "hidden_text_alert",
+                    {
+                        "action_id": request.id,
+                        "session_id": request.session,
+                        "file_path": txt_target,
+                        "line": primary_line,
+                        "pattern": primary_pattern,
+                        "summary": assessment.summary,
+                        "why": assessment.why,
+                        "severity": assessment.severity.value,
+                    },
+                )
+            )
+
         # 4. Low risk permitted automatically if clean
         if assessment.severity == Severity.LOW and not taint.tainted and self.config.auto_allow_low_risk:
             latency = (time.time() - start_time) * 1000

@@ -42,7 +42,9 @@ fun SessionInfoScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
     var showRewindDialog by remember { mutableStateOf(false) }
+    var showReceiptDialog by remember { mutableStateOf(false) }
     var activityFilter by remember { mutableStateOf("ALL") }
 
     // Combine timeline from server session activity or fallback to local feed items

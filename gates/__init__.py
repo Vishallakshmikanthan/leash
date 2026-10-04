@@ -16,7 +16,7 @@ from gates.package_gate import (
     PackageGate,
     PackageKnowledge,
 )
-from gates.hidden_text import HiddenTextGate
+from gates.hidden_text import HiddenTextFinding, HiddenTextGate, HiddenTextScanner
 from gates.workflow_watchlist import WorkflowWatchlistGate
 from gates.provenance_tracker import ProvenanceTracker, ProvenanceTrackerGate
 
@@ -33,7 +33,9 @@ __all__ = [
     "PackageKnowledge",
     "LockfileInspector",
     "AllowOnceManager",
+    "HiddenTextFinding",
     "HiddenTextGate",
+    "HiddenTextScanner",
     "WorkflowWatchlistGate",
     "ProvenanceTracker",
     "ProvenanceTrackerGate",

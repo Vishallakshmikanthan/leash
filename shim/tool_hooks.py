@@ -95,6 +95,8 @@ class ToolHooks:
             nonce=uuid.uuid4().hex[:8],
             kind=ActionKind.FILE_EDIT,
             target_path=file_path,
+            tool_name="edit_file",
+            tool_args={"content": new_content, "target_path": file_path},
             agent="agent-tool-hook",
             cwd=".",
         )

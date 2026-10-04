@@ -114,10 +114,12 @@ object OnDeviceRiskExplainer {
             }
 
             // Category 10: Hidden Text & Unicode Evasion
-            cat in listOf("hidden-text-detected", "hidden-unicode") -> {
-                summary = existingSummary ?: "Command contains invisible Unicode or bidirectional control characters."
-                why = existingWhy ?: "Invisible codepoints disguise malicious command segments so on-screen text does not match shell execution."
-                saferAlt = existingAlt ?: "Re-type command in clean ASCII and verify raw character byte encoding."
+            cat in listOf("hidden-text-detected", "hidden-unicode", "hidden-text") -> {
+                val loc = context["location"] as? String ?: target.ifEmpty { "file" }
+                val pat = context["pattern"] as? String ?: "invisible Unicode or bidirectional control characters"
+                summary = existingSummary ?: "Concealed text or control characters detected in `$loc`."
+                why = existingWhy ?: "Detected `$pat`. Invisible codepoints or hidden comments disguise malicious code (Trojan Source) or inject covert instructions."
+                saferAlt = existingAlt ?: "Inspect file in raw byte mode, strip concealed characters, and verify source before proceeding."
             }
 
             // Category 11: Scope Violations / Task Contract Drift

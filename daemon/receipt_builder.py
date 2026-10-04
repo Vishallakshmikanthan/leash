@@ -120,6 +120,22 @@ class ReceiptBuilder:
                     "verdict": verdict,
                     "ts": e.get("ts", 0),
                 })
+            # Hidden text / Unicode evasion
+            elif ev_type == "hidden_text_detected" or cat in ("hidden-text-detected", "hidden-text") or e.get("kind") == "hidden_text_detected":
+                target = e.get("target_path") or meta.get("file_path") or "file"
+                line = meta.get("line")
+                line_str = f":{line}" if line else ""
+                pat_name = meta.get("pattern_name") or "Invisible Unicode / BiDi control characters"
+                why = meta.get("risk_reason") or "Concealed text or instructions detected in file."
+                risk_events.append({
+                    "type": "HIDDEN_TEXT_DETECTED",
+                    "badge": "👁️ HIDDEN TEXT",
+                    "title": f"Concealed Instruction / Hidden Unicode in `{target}{line_str}`",
+                    "details": f"Pattern: {pat_name}. {why}",
+                    "action": meta.get("snippet") or target,
+                    "verdict": verdict,
+                    "ts": e.get("ts", 0),
+                })
             # Rewind
             elif ev_type == "rewind":
                 restored = meta.get("restored", False)

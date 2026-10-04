@@ -238,6 +238,54 @@ class AuditLogger:
         self.log(event)
         return event
 
+    def record_hidden_text_event(
+        self,
+        session_id: str,
+        action_id: str,
+        file_path: str,
+        line: int,
+        pattern_name: str,
+        risk_reason: str,
+        snippet: Optional[str] = None,
+        severity: str = "medium",
+        verdict: str = "deny",
+        decided_by: str = "hidden_text_scanner",
+        agent: Optional[str] = None,
+        worktree: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> AuditEvent:
+        """Records a hidden text / invisible Unicode / concealed instruction security event."""
+        meta = {
+            "file_path": sanitize_text(file_path, max_len=300),
+            "line": line,
+            "pattern_name": pattern_name,
+            "risk_reason": risk_reason,
+            "snippet": sanitize_text(snippet, max_len=300),
+        }
+        if metadata:
+            meta.update(metadata)
+
+        event = AuditEvent(
+            event_id=f"evt_txt_{int(time.time()*1000)}",
+            session_id=session_id,
+            ts=int(time.time()),
+            event_type="hidden_text_detected",
+            action_id=action_id,
+            kind="hidden_text_detected",
+            command=None,
+            target_path=sanitize_text(file_path, max_len=500),
+            risk_severity=severity,
+            risk_category="hidden-text-detected",
+            verdict=verdict,
+            decided_by=decided_by,
+            agent=agent or "unknown",
+            worktree=worktree,
+            tainted=True,
+            metadata=meta,
+        )
+        self.log(event)
+        return event
+
     def record_package_gate_event(
         self,
         session_id: str,

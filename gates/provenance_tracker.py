@@ -194,6 +194,24 @@ class ProvenanceTracker:
         detected_snippet: Optional[str] = None
         flags: List[str] = []
 
+        # 1. Comprehensive Hidden Text Scanner scan across full content
+        hidden_findings = self._hidden_scanner.scan_text(content, file_path="content")
+        for hf in hidden_findings:
+            if "hidden-text" not in flags:
+                flags.append("hidden-text")
+            if hf.pattern_type == "bidi_control" and "bidi-override" not in flags:
+                flags.append("bidi-override")
+            elif hf.pattern_type == "unicode_tags" and "tag-steganography" not in flags:
+                flags.append("tag-steganography")
+            elif hf.pattern_type == "concealed_instruction" and "concealed-instruction" not in flags:
+                flags.append("concealed-instruction")
+            elif hf.pattern_type == "hidden_comment" and "hidden-comment" not in flags:
+                flags.append("hidden-comment")
+
+            if detected_line is None:
+                detected_line = hf.line
+                detected_snippet = hf.snippet[:120]
+
         in_code_block = False
 
         for idx, line in enumerate(lines, start=1):
@@ -205,14 +223,6 @@ class ProvenanceTracker:
             if stripped.startswith("```"):
                 in_code_block = not in_code_block
                 continue
-
-            # 1. Hidden text check (BiDi overrides or Zero-width)
-            anomalies = self._hidden_scanner.scan_string(line)
-            if anomalies:
-                flags.append("hidden-text")
-                if detected_line is None:
-                    detected_line = idx
-                    detected_snippet = stripped[:120]
 
             # 2. Known injection / malicious command patterns
             for pattern, flag in self.INJECTION_PATTERNS:
@@ -386,16 +396,23 @@ class ProvenanceTracker:
         line: Optional[int] = None,
         flags: Optional[List[str]] = None,
         snippet: Optional[str] = None,
+        kind: Optional[ProvenanceKind] = None,
     ) -> ProvenanceEvent:
         """Constructs a signed or ready-to-sign ProvenanceEvent."""
+        fl = flags or ["untrusted-doc"]
+        if kind is None:
+            if "hidden-text" in fl or "bidi-override" in fl or "tag-steganography" in fl or "concealed-instruction" in fl:
+                kind = ProvenanceKind.HIDDEN_TEXT_DETECTED
+            else:
+                kind = ProvenanceKind.UNTRUSTED_READ
         return ProvenanceEvent(
             id=f"p_{uuid.uuid4().hex[:12]}",
             session=session_id,
             ts=int(time.time()),
-            kind=ProvenanceKind.UNTRUSTED_READ,
+            kind=kind,
             source=source,
             line=line or 1,
-            flags=flags or ["untrusted-doc"],
+            flags=fl,
             snippet=snippet,
         )
 

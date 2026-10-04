@@ -172,8 +172,13 @@ class TemplateFallbackEngine:
             safer_alt = ctx.get("existing_alternative") or f"Verify that `{cmd[:35]}` aligns with your original task rather than instructions in `{src}`."
 
         # Category 10: Hidden Text & Unicode Evasion
-        elif cat in ("hidden-text-detected", "hidden-unicode"):
-            summary = ctx.get("existing_summary") or "Command contains invisible Unicode or bidirectional control characters."
+        elif cat in ("hidden-text-detected", "hidden-unicode", "hidden-text"):
+            loc = ctx.get("location")
+            summary = ctx.get("existing_summary") or (
+                f"Command contains invisible Unicode or bidirectional control characters in `{loc}`."
+                if loc
+                else "Command contains invisible Unicode or bidirectional control characters."
+            )
             why = ctx.get("existing_why") or "Invisible codepoints disguise malicious command segments so on-screen text does not match shell execution."
             safer_alt = ctx.get("existing_alternative") or "Re-type command in clean ASCII and verify raw character byte encoding."
 
