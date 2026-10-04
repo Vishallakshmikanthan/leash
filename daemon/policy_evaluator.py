@@ -1,13 +1,27 @@
 """
-daemon/policy_evaluator.py - Rule engine and risk scoring with shlex tokenization.
+daemon/policy_evaluator.py - Rule-first risk engine with structured shell parsing, modular gates, and taint escalation.
 """
 from __future__ import annotations
 
-import shlex
 import uuid
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 from contracts.models import ActionKind, ActionRequest, RiskAssessment, Severity
+from daemon.risk_rules import (
+    BaseRule,
+    DestructiveFileOperationsRule,
+    ForcefulGitOperationsRule,
+    NormalDevelopmentRule,
+    OutboundDataTransferRule,
+    PackageInstallationRule,
+    PermissionChangesRule,
+    RemoteScriptExecutionRule,
+    RuleMatch,
+    ScopeViolationsRule,
+    SecretExposureRule,
+    SensitiveFileChangesRule,
+)
+from daemon.shell_parser import ParsedShell, ShellParser
 from gates.base import BaseGate, GateResult
 from gates.hidden_text import HiddenTextGate
 from gates.package_gate import PackageGate
@@ -16,32 +30,52 @@ from gates.workflow_watchlist import WorkflowWatchlistGate
 
 
 class PolicyEvaluator:
-    """Evaluates ActionRequests with local rules, gates, and taint escalation."""
+    """Evaluates ActionRequests with structured shell parsing, modular security gates, and provenance escalation."""
 
-    DESTRUCTIVE_PATTERNS = [
-        "rm -rf", "rm -r", "dd if=", "mkfs", ":(){ :|:& };:", "chmod -R 777",
-    ]
-
-    GIT_FORCE_PATTERNS = [
-        "push --force", "push -f", "reset --hard", "clean -fdx", "clean -f",
-    ]
-
-    REMOTE_SCRIPT_PATTERNS = [
-        ("curl", "sh"), ("curl", "bash"), ("wget", "sh"), ("wget", "bash"),
-    ]
-
-    def __init__(self, allow_command_patterns: Optional[List[str]] = None):
+    def __init__(
+        self,
+        allow_command_patterns: Optional[List[str]] = None,
+        custom_rules: Optional[List[BaseRule]] = None,
+        custom_gates: Optional[List[BaseGate]] = None,
+    ):
         self.allow_patterns = allow_command_patterns or [
-            "pytest", "npm test", "npm run test", "cargo test", "git status", "git diff", "git log", "git --version", "python --version", "ls", "pwd", "ruff", "flake8", "black"
+            "pytest", "npm test", "npm run test", "cargo test", "git status",
+            "git diff", "git log", "git --version", "python --version", "ls", "pwd",
+            "ruff", "flake8", "black"
         ]
-        self.gates: List[BaseGate] = [
+
+        # Core rules catalog
+        self.rules: List[BaseRule] = custom_rules or [
+            RemoteScriptExecutionRule(),
+            DestructiveFileOperationsRule(),
+            ForcefulGitOperationsRule(),
+            SecretExposureRule(),
+            SensitiveFileChangesRule(),
+            PermissionChangesRule(),
+            OutboundDataTransferRule(),
+            PackageInstallationRule(),
+            ScopeViolationsRule(),
+            NormalDevelopmentRule(),
+        ]
+
+        # Modular security gates
+        self.gates: List[BaseGate] = custom_gates or [
             SecretFenceGate(),
             PackageGate(),
             HiddenTextGate(),
             WorkflowWatchlistGate(),
         ]
 
+    def register_rule(self, rule: BaseRule) -> None:
+        """Dynamically registers an additional policy rule."""
+        self.rules.insert(0, rule)
+
+    def register_gate(self, gate: BaseGate) -> None:
+        """Dynamically registers an additional security gate."""
+        self.gates.append(gate)
+
     def is_quick_allow(self, request: ActionRequest) -> bool:
+        """Quickly checks whether an ActionRequest can be safely executed without phone notification."""
         if request.taint.tainted or request.scope_flags:
             return False
 
@@ -57,78 +91,87 @@ class PolicyEvaluator:
                 if res and res.triggered:
                     return False
 
+            # Check if any high or medium rule triggers
+            parsed = ShellParser.parse(cmd)
+            for rule in self.rules:
+                if isinstance(rule, NormalDevelopmentRule):
+                    continue
+                match = rule.evaluate(request, parsed)
+                if match and match.severity in (Severity.HIGH, Severity.MEDIUM, Severity.CRITICAL):
+                    return False
+
+            # Check allow patterns
             for pattern in self.allow_patterns:
                 if cmd == pattern or cmd.startswith(pattern + " "):
                     return True
+
         return False
 
     def evaluate(self, request: ActionRequest) -> RiskAssessment:
+        """Evaluates an ActionRequest and returns a comprehensive RiskAssessment."""
+        # 1. Parse shell command structured AST
+        cmd_str = request.command or ""
+        parsed = ShellParser.parse(cmd_str)
+
+        all_matches: List[RuleMatch] = []
         rule_ids: List[str] = []
-        severity = Severity.LOW
-        category = "normal-development"
-        summary = "Standard development command."
-        why = "Matches safe workflow allow-list."
-        safer_alternative = "None needed."
 
-        cmd = request.command or ""
+        # 2. Evaluate all rules
+        for rule in self.rules:
+            match = rule.evaluate(request, parsed)
+            if match:
+                all_matches.append(match)
+                if match.rule_id not in rule_ids:
+                    rule_ids.append(match.rule_id)
 
-        # 1. Check Destructive file operations
-        for pat in self.DESTRUCTIVE_PATTERNS:
-            if pat in cmd:
-                rule_ids.append("R-FS-DESTRUCTIVE")
-                severity = Severity.HIGH
-                category = "destructive-file-operations"
-                summary = f"Destructive command detected: {pat}"
-                why = "Recursive deletion can irreversibly destroy source code and system files."
-                safer_alternative = "Target specific files without recursive force flags."
-                break
-
-        # 2. Check Git rewrite / force push
-        if severity != Severity.HIGH:
-            for pat in self.GIT_FORCE_PATTERNS:
-                if pat in cmd:
-                    rule_ids.append("R-GIT-FORCE")
-                    severity = Severity.HIGH
-                    category = "history-rewrite-force-push"
-                    summary = f"Git history rewrite command detected: {pat}"
-                    why = "Force pushes and hard resets destroy uncommitted work or remote history."
-                    safer_alternative = "Use normal push or revert commits instead of hard resets."
-                    break
-
-        # 3. Check Remote script execution (curl | sh)
-        if severity != Severity.HIGH and "|" in cmd:
-            for fetcher, runner in self.REMOTE_SCRIPT_PATTERNS:
-                if fetcher in cmd and runner in cmd:
-                    rule_ids.append("R-NET-PIPE-SH")
-                    severity = Severity.HIGH
-                    category = "remote-script-execution"
-                    summary = f"Piping remote content from {fetcher} into {runner}."
-                    why = "Cannot inspect or verify code before execution."
-                    safer_alternative = f"Download script with {fetcher}, inspect it, then execute."
-                    break
-
-        # 4. Check modular gates
+        # 3. Evaluate all modular security gates
         for gate in self.gates:
             gate_res = gate.evaluate(request)
             if gate_res and gate_res.triggered:
-                rule_ids.append(gate_res.rule_id)
-                # Elevate severity if higher
-                if (gate_res.severity == Severity.HIGH) or (gate_res.severity == Severity.MEDIUM and severity == Severity.LOW):
-                    severity = gate_res.severity
-                    category = gate_res.category
-                    summary = gate_res.summary
-                    why = gate_res.why
-                    safer_alternative = gate_res.safer_alternative
+                if gate_res.rule_id not in rule_ids:
+                    rule_ids.append(gate_res.rule_id)
+                all_matches.append(
+                    RuleMatch(
+                        rule_id=gate_res.rule_id,
+                        category=gate_res.category,
+                        severity=gate_res.severity,
+                        summary=gate_res.summary,
+                        why=gate_res.why,
+                        safer_alternative=gate_res.safer_alternative,
+                    )
+                )
 
-        # 5. Check Scope flags
-        if request.scope_flags and severity == Severity.LOW:
-            severity = Severity.MEDIUM
-            category = "scope-drift"
-            summary = "Action touches paths or commands outside defined session scope."
-            why = f"Triggered scope flags: {', '.join(request.scope_flags)}"
-            safer_alternative = "Adjust session scope or constrain work to approved directories."
+        # 4. Determine highest severity match
+        severity_order = {
+            Severity.CRITICAL: 4,
+            Severity.HIGH: 3,
+            Severity.MEDIUM: 2,
+            Severity.LOW: 1,
+        }
 
-        # 6. Taint escalation (F1)
+        # Filter out normal development if dangerous matches exist
+        non_dev_matches = [m for m in all_matches if m.category != "normal-development"]
+        candidates = non_dev_matches if non_dev_matches else all_matches
+
+        if candidates:
+            # Sort by severity descending
+            candidates.sort(key=lambda m: severity_order.get(m.severity, 0), reverse=True)
+            primary = candidates[0]
+            severity = primary.severity
+            category = primary.category
+            summary = primary.summary
+            why = primary.why
+            safer_alternative = primary.safer_alternative
+        else:
+            severity = Severity.LOW
+            category = "normal-development"
+            summary = "Standard development activity."
+            why = "Matches safe development workflow."
+            safer_alternative = "None needed."
+            if not rule_ids:
+                rule_ids.append("R-DEV-ALLOW")
+
+        # 5. Provenance-based escalation (F1)
         tainted_escalation = False
         if request.taint.tainted:
             if severity == Severity.MEDIUM:
@@ -137,9 +180,8 @@ class PolicyEvaluator:
                 category = "untrusted-text-influence"
                 summary = f"[TAINTED] Action escalated to HIGH following untrusted read: {request.taint.source or 'unknown'}"
                 why = f"Triggered after agent ingested untrusted content at {request.taint.source}:{request.taint.line}."
-            elif severity == Severity.LOW:
-                # low risk retains low unless suspicious
-                pass
+            elif severity == Severity.HIGH:
+                tainted_escalation = True
 
         return RiskAssessment(
             id=f"r_{uuid.uuid4().hex[:12]}",

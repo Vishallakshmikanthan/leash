@@ -10,24 +10,28 @@ from contracts.models import ActionKind, ActionRequest, Severity
 from gates.base import BaseGate, GateResult
 
 
-def levenshtein_distance(s1: str, s2: str) -> int:
-    """Computes basic edit distance to flag typosquats."""
-    if len(s1) < len(s2):
-        return levenshtein_distance(s2, s1)
-    if len(s2) == 0:
-        return len(s1)
+def damerau_levenshtein_distance(s1: str, s2: str) -> int:
+    """Computes Damerau-Levenshtein distance supporting insertions, deletions, substitutions, and transpositions."""
+    d = {}
+    len1 = len(s1)
+    len2 = len(s2)
+    for i in range(-1, len1 + 1):
+        d[(i, -1)] = i + 1
+    for j in range(-1, len2 + 1):
+        d[(-1, j)] = j + 1
 
-    previous_row = range(len(s2) + 1)
-    for i, c1 in enumerate(s1):
-        current_row = [i + 1]
-        for j, c2 in enumerate(s2):
-            insertions = previous_row[j + 1] + 1
-            deletions = current_row[j] + 1
-            substitutions = previous_row[j] + (c1 != c2)
-            current_row.append(min(insertions, deletions, substitutions))
-        previous_row = current_row
+    for i in range(len1):
+        for j in range(len2):
+            cost = 0 if s1[i] == s2[j] else 1
+            d[(i, j)] = min(
+                d[(i - 1, j)] + 1,       # deletion
+                d[(i, j - 1)] + 1,       # insertion
+                d[(i - 1, j - 1)] + cost # substitution
+            )
+            if i > 0 and j > 0 and s1[i] == s2[j - 1] and s1[i - 1] == s2[j]:
+                d[(i, j)] = min(d[(i, j)], d[(i - 2, j - 2)] + 1) # transposition
 
-    return previous_row[-1]
+    return d[(len1 - 1, len2 - 1)]
 
 
 class PackageGate(BaseGate):
@@ -70,9 +74,10 @@ class PackageGate(BaseGate):
             if pkg_name in self.POPULAR_PACKAGES:
                 continue
 
-            # Check for typosquatting (edit distance == 1)
+            # Check for typosquatting
             for popular in self.POPULAR_PACKAGES:
-                if levenshtein_distance(pkg_name, popular) == 1:
+                dist = damerau_levenshtein_distance(pkg_name, popular)
+                if dist == 1 or (len(popular) >= 7 and dist <= 2):
                     return GateResult(
                         triggered=True,
                         rule_id="R-PKG-TYPOSQUAT",
