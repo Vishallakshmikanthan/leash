@@ -286,6 +286,51 @@ class AuditLogger:
         self.log(event)
         return event
 
+    def record_runaway_alert(
+        self,
+        session_id: str,
+        action_id: str,
+        reason: str,
+        category: str = "runaway-behavior-detected",
+        severity: str = "high",
+        runaway_type: str = "general",
+        command: Optional[str] = None,
+        target_path: Optional[str] = None,
+        agent: Optional[str] = None,
+        worktree: Optional[str] = None,
+        stats: Optional[Dict[str, Any]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> AuditEvent:
+        """Records an immediate security alert when runaway behavior (failure streak, loop, burst, timeout) is detected."""
+        meta = {
+            "alert": "RUNAWAY_BEHAVIOR_DETECTED",
+            "reason": sanitize_text(reason, max_len=300),
+            "runaway_type": runaway_type,
+            "stats": stats or {},
+        }
+        if metadata:
+            meta.update(metadata)
+
+        event = AuditEvent(
+            event_id=f"evt_runaway_{int(time.time()*1000)}",
+            session_id=session_id,
+            ts=int(time.time()),
+            event_type="runaway_security_alert",
+            action_id=action_id,
+            kind="runaway_alert",
+            command=sanitize_text(command, max_len=500),
+            target_path=sanitize_text(target_path, max_len=500),
+            risk_severity=severity,
+            risk_category=category,
+            verdict="paused",
+            decided_by="runaway_guard",
+            agent=agent or "unknown",
+            worktree=worktree,
+            metadata=meta,
+        )
+        self.log(event)
+        return event
+
     def record_package_gate_event(
         self,
         session_id: str,

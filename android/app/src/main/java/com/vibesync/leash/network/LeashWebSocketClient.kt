@@ -339,6 +339,12 @@ class LeashWebSocketClient(
                 "heartbeat_ack" -> {
                     // Heartbeat acknowledged by laptop daemon
                 }
+                "runaway_alert" -> {
+                    Log.w("LeashClient", "Runaway behavior detected on agent: $payloadStr")
+                }
+                "runaway_decision_ack" -> {
+                    Log.i("LeashClient", "Runaway decision confirmed: $payloadStr")
+                }
             }
         } catch (e: Exception) {
             Log.e("LeashClient", "Failed to parse message: $text", e)

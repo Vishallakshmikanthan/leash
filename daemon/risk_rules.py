@@ -846,6 +846,39 @@ class PackageInstallationRule(BaseRule):
 
 
 # -----------------------------------------------------------------------------
+# 8b. Runaway Behavior Rule (N6)
+# -----------------------------------------------------------------------------
+
+class RunawayBehaviorRule(BaseRule):
+    """Detects runaway behavior (repeated failing commands, edit loops, cadence bursts, time limits)."""
+
+    @property
+    def rule_id(self) -> str:
+        return "R-RUNAWAY-DETECTED"
+
+    @property
+    def category(self) -> str:
+        return "runaway-behavior-detected"
+
+    @property
+    def default_severity(self) -> Severity:
+        return Severity.HIGH
+
+    def evaluate(self, request: ActionRequest, parsed_shell: ParsedShell) -> Optional[RuleMatch]:
+        if "runaway-behavior-detected" in request.scope_flags:
+            return RuleMatch(
+                rule_id=self.rule_id,
+                category=self.category,
+                severity=Severity.HIGH,
+                summary="Runaway behavior detected: execution loop, failure streak, or session timeout.",
+                why="Consecutive failures, looping cadence, or session time limit reached indicate agent thrashing. Manual user review is required.",
+                safer_alternative="Interrupt loop, review recent errors, and provide corrective instructions to agent.",
+                details={"flags": request.scope_flags},
+            )
+        return None
+
+
+# -----------------------------------------------------------------------------
 # 9. Scope Violations Rule
 # -----------------------------------------------------------------------------
 
@@ -865,16 +898,17 @@ class ScopeViolationsRule(BaseRule):
         return Severity.MEDIUM
 
     def evaluate(self, request: ActionRequest, parsed_shell: ParsedShell) -> Optional[RuleMatch]:
-        # 1. Explicit scope flags from caller/session manager
-        if request.scope_flags:
+        # 1. Explicit scope flags from caller/session manager (excluding runaway lifecycle flags)
+        flags = [f for f in request.scope_flags if f not in ("runaway-behavior-detected", "session-paused", "session-terminated")]
+        if flags:
             return RuleMatch(
                 rule_id="R-SCOPE-DRIFT",
                 category=self.category,
                 severity=Severity.MEDIUM,
                 summary="Action touches paths or commands outside defined session scope.",
-                why=f"Triggered scope flags: {', '.join(request.scope_flags)}",
+                why=f"Triggered scope flags: {', '.join(flags)}",
                 safer_alternative="Adjust session scope or constrain work to approved directories.",
-                details={"flags": request.scope_flags},
+                details={"flags": flags},
             )
 
         # 2. Path traversal in target path or command arguments

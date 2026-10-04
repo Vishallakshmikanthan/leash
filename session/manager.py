@@ -62,6 +62,7 @@ class SessionManager:
         task_description: Optional[str] = None,
         session_id: Optional[str] = None,
         base_ref: str = "HEAD",
+        time_limit_seconds: Optional[int] = None,
     ) -> SessionScope:
         """Initializes a new session with an isolated Git worktree and declared task scope."""
         sess_id = session_id or f"s_{uuid.uuid4().hex[:12]}"
@@ -97,10 +98,14 @@ class SessionManager:
             tainted=False,
             taint_events=[],
             snapshots=[],
+            time_limit_seconds=time_limit_seconds,
         )
 
         self.sessions[sess_id] = scope
-        self.session_guards[sess_id] = RunawayGuard()
+        self.session_guards[sess_id] = RunawayGuard(
+            time_limit_seconds=time_limit_seconds,
+            created_at=float(scope.created_at),
+        )
         self.session_taints[sess_id] = TaintContext(tainted=False)
         self.session_scopes[sess_id] = scope_contract
         self.session_action_history[sess_id] = []
@@ -220,8 +225,11 @@ class SessionManager:
         guard = self.session_guards.get(session_id)
         if guard:
             warning = guard.check_action(request)
-            if warning and "runaway-behavior-detected" not in request.scope_flags:
-                request.scope_flags.append("runaway-behavior-detected")
+            if warning:
+                if "runaway-behavior-detected" not in request.scope_flags:
+                    request.scope_flags.append("runaway-behavior-detected")
+                # Pause the active session upon detected runaway behavior
+                self.pause_session(session_id)
 
         # 7. Record action in session history
         self.session_action_history.setdefault(session_id, []).append(request.id)
@@ -237,12 +245,16 @@ class SessionManager:
         logger.info(f"Session {session_id} paused")
         return True
 
-    def resume_session(self, session_id: str) -> bool:
-        """Transitions a paused session back to ACTIVE state."""
+    def resume_session(self, session_id: str, reset_runaway: bool = True) -> bool:
+        """Transitions a paused session back to ACTIVE state and clears runaway guard trip state."""
         session = self.sessions.get(session_id)
         if not session or session.state != SessionState.PAUSED:
             return False
         session.state = SessionState.ACTIVE
+        if reset_runaway:
+            guard = self.session_guards.get(session_id)
+            if guard:
+                guard.reset()
         logger.info(f"Session {session_id} resumed")
         return True
 
@@ -431,10 +443,13 @@ class SessionManager:
         return self.snapshot_mgr.list_snapshots(session_id)
 
     def record_action_result(self, session_id: str, request: ActionRequest, exit_code: int) -> Optional[str]:
-        """Feeds command outcome back into runaway guard to track failure streaks."""
+        """Feeds command outcome back into runaway guard to track failure streaks and pauses on trip."""
         guard = self.session_guards.get(session_id)
         if guard and request.command:
-            return guard.record_result(request.command, exit_code)
+            trip_reason = guard.record_result(request.command, exit_code)
+            if trip_reason:
+                self.pause_session(session_id)
+            return trip_reason
         return None
 
     def get_session_details(self, session_id: str) -> Optional[Dict[str, Any]]:

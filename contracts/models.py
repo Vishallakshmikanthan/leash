@@ -343,6 +343,7 @@ class SessionScope:
     termination_reason: Optional[str] = None
     changed_files: List[Dict[str, Any]] = field(default_factory=list)
     receipt_markdown: Optional[str] = None
+    time_limit_seconds: Optional[int] = None
 
     def to_dict(self) -> Dict[str, Any]:
         res = asdict(self)
@@ -375,6 +376,7 @@ class SessionScope:
             termination_reason=data.get("termination_reason"),
             changed_files=data.get("changed_files", []),
             receipt_markdown=data.get("receipt_markdown"),
+            time_limit_seconds=data.get("time_limit_seconds"),
         )
 
 

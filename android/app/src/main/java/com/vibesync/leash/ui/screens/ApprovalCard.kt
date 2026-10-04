@@ -489,6 +489,45 @@ fun ApprovalCard(
                 }
             }
 
+            // Runaway Guard Alert Banner (N6 Feature)
+            val isRunaway = assessment.category in listOf("runaway-behavior-detected", "runaway-guard") ||
+                req.scope_flags.contains("runaway-behavior-detected")
+            if (isRunaway) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Surface(
+                    color = Color(0xFFFF5722).copy(alpha = 0.15f),
+                    shape = RoundedCornerShape(10.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFFF5722).copy(alpha = 0.6f)),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Loop,
+                                contentDescription = "Runaway Guard Warning",
+                                tint = Color(0xFFFF5722),
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "RUNAWAY GUARD • AGENT PAUSED",
+                                color = Color(0xFFFF5722),
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                letterSpacing = 0.5.sp
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = if (assessment.why.isNotBlank()) assessment.why else "Repeated failing commands, edit loops, or execution cadence burst detected. Agent paused pending your decision.",
+                            color = LeashTextPrimary,
+                            fontSize = 12.sp,
+                            lineHeight = 16.sp
+                        )
+                    }
+                }
+            }
+
             Spacer(modifier = Modifier.height(14.dp))
 
             // Explanation Mode Header Badge

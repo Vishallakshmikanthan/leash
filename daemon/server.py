@@ -122,6 +122,8 @@ class LeashDaemonServer:
         self.app.router.add_get("/sessions/{session_id}/snapshots", self._handle_get_session_snapshots)
         self.app.router.add_post("/sessions/{session_id}/scope", self._handle_post_session_scope)
         self.app.router.add_get("/sessions/{session_id}/activity", self._handle_get_session_activity)
+        self.app.router.add_post("/sessions/{session_id}/runaway/decision", self._handle_post_runaway_decision)
+        self.app.router.add_post("/session/runaway/decision", self._handle_post_runaway_decision)
         self.app.router.add_post("/action", self._handle_post_action)
         self.app.router.add_post("/decision", self._handle_post_decision)
         self.app.router.add_post("/provenance", self._handle_post_provenance)
@@ -337,6 +339,12 @@ class LeashDaemonServer:
         task_description = body.get("task_description")
         session_id = body.get("session_id") or body.get("session")
         base_ref = body.get("base_ref", "HEAD")
+        time_limit_seconds = body.get("time_limit_seconds")
+        if time_limit_seconds is not None:
+            try:
+                time_limit_seconds = int(time_limit_seconds)
+            except (ValueError, TypeError):
+                time_limit_seconds = None
 
         scope = self.session_mgr.create_session(
             allowed_paths=allowed_paths,
@@ -346,6 +354,7 @@ class LeashDaemonServer:
             task_description=task_description,
             session_id=session_id,
             base_ref=base_ref,
+            time_limit_seconds=time_limit_seconds,
         )
 
         await self.broadcast_to_phone("session_created", scope.to_dict())
@@ -372,7 +381,7 @@ class LeashDaemonServer:
 
     async def _handle_post_resume_session(self, request: web.Request) -> web.Response:
         session_id = request.match_info.get("session_id", "")
-        ok = self.session_mgr.resume_session(session_id)
+        ok = self.session_mgr.resume_session(session_id, reset_runaway=True)
         if not ok:
             return web.json_response(
                 {"error": f"Could not resume session '{session_id}' (not paused or not found)"}, status=400
@@ -381,6 +390,88 @@ class LeashDaemonServer:
         payload = session.to_dict() if session else {"session_id": session_id, "state": "active"}
         await self.broadcast_to_phone("session_state_changed", payload)
         return web.json_response({"status": "ok", "session_id": session_id, "state": "active"})
+
+    async def _handle_post_runaway_decision(self, request: web.Request) -> web.Response:
+        """Handles human approval or denial decisions specifically resolving runaway alerts."""
+        session_id = request.match_info.get("session_id")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        sess_id = session_id or body.get("session_id") or self.session_mgr.active_session_id or ""
+        verdict_str = (body.get("verdict") or "allow").lower()
+        action_id = body.get("action_id")
+        note = body.get("note") or f"Runaway decision: {verdict_str}"
+
+        if verdict_str in ("allow", "resume"):
+            ok = self.session_mgr.resume_session(sess_id, reset_runaway=True)
+            # Resolve any pending decision for this action or session
+            for a_id, fut in list(self.pending_decisions.items()):
+                if (not action_id or a_id == action_id) and not fut.done():
+                    req = self.pending_metadata.get(a_id, {}).get("request")
+                    if req and req.session == sess_id:
+                        fut.set_result(Decision(
+                            id=f"d_runaway_{uuid.uuid4().hex[:8]}",
+                            action_id=a_id,
+                            session=sess_id,
+                            ts=int(time.time()),
+                            nonce=self.signer.generate_nonce(),
+                            verdict=Verdict.ALLOW,
+                            by=DecidedBy.HUMAN,
+                            note=note,
+                        ))
+            await self.broadcast_to_phone("session_state_changed", {
+                "session_id": sess_id,
+                "state": "active",
+                "reason": "Resumed via runaway decision",
+            })
+            return web.json_response({"status": "ok", "session_id": sess_id, "state": "active", "resumed": ok})
+
+        elif verdict_str in ("terminate",):
+            term_scope = self.session_mgr.terminate_session(
+                session_id=sess_id,
+                reason=note,
+            )
+            for a_id, fut in list(self.pending_decisions.items()):
+                if (not action_id or a_id == action_id) and not fut.done():
+                    req = self.pending_metadata.get(a_id, {}).get("request")
+                    if req and req.session == sess_id:
+                        fut.set_result(Decision(
+                            id=f"d_runaway_term_{uuid.uuid4().hex[:8]}",
+                            action_id=a_id,
+                            session=sess_id,
+                            ts=int(time.time()),
+                            nonce=self.signer.generate_nonce(),
+                            verdict=Verdict.DENY,
+                            by=DecidedBy.HUMAN,
+                            note=note,
+                        ))
+            await self.broadcast_to_phone("session_state_changed", {
+                "session_id": sess_id,
+                "state": "terminated",
+                "reason": note,
+            })
+            return web.json_response({"status": "ok", "session_id": sess_id, "state": "terminated"})
+
+        else:
+            # Deny / keep paused
+            self.session_mgr.pause_session(sess_id)
+            for a_id, fut in list(self.pending_decisions.items()):
+                if (not action_id or a_id == action_id) and not fut.done():
+                    req = self.pending_metadata.get(a_id, {}).get("request")
+                    if req and req.session == sess_id:
+                        fut.set_result(Decision(
+                            id=f"d_runaway_deny_{uuid.uuid4().hex[:8]}",
+                            action_id=a_id,
+                            session=sess_id,
+                            ts=int(time.time()),
+                            nonce=self.signer.generate_nonce(),
+                            verdict=Verdict.DENY,
+                            by=DecidedBy.HUMAN,
+                            note=note,
+                        ))
+            return web.json_response({"status": "ok", "session_id": sess_id, "state": "paused"})
 
     async def _handle_post_terminate_session(self, request: web.Request) -> web.Response:
         session_id = request.match_info.get("session_id", "")
@@ -730,6 +821,12 @@ class LeashDaemonServer:
         ):
             self._register_allow_once_from_decision(action_id, decision)
 
+        if verdict == Verdict.ALLOW:
+            req_info = self.pending_metadata.get(action_id, {})
+            req = req_info.get("request")
+            if req and "runaway-behavior-detected" in req.scope_flags:
+                self.session_mgr.resume_session(req.session, reset_runaway=True)
+
         fut = self.pending_decisions[action_id]
         if not fut.done():
             fut.set_result(decision)
@@ -1051,11 +1148,92 @@ class LeashDaemonServer:
                     allowed_hosts=payload.get("allowed_hosts"),
                     agent_name=payload.get("agent", "coding-agent"),
                     task_description=payload.get("task_description"),
+                    time_limit_seconds=payload.get("time_limit_seconds"),
                 )
                 await ws.send_str(json.dumps({
                     "type": "session_created",
                     "payload": sess.to_dict(),
                 }))
+
+            elif msg_type == "runaway_decision":
+                sess_id = payload.get("session_id") or self.session_mgr.active_session_id
+                verdict_str = (payload.get("verdict") or "allow").lower()
+                action_id = payload.get("action_id")
+                note = payload.get("note") or f"Runaway decision via phone: {verdict_str}"
+
+                if verdict_str in ("allow", "resume"):
+                    ok = self.session_mgr.resume_session(sess_id or "", reset_runaway=True)
+                    for a_id, fut in list(self.pending_decisions.items()):
+                        if (not action_id or a_id == action_id) and not fut.done():
+                            req = self.pending_metadata.get(a_id, {}).get("request")
+                            if req and req.session == sess_id:
+                                fut.set_result(Decision(
+                                    id=f"d_runaway_{uuid.uuid4().hex[:8]}",
+                                    action_id=a_id,
+                                    session=sess_id or "s_default",
+                                    ts=int(time.time()),
+                                    nonce=self.signer.generate_nonce(),
+                                    verdict=Verdict.ALLOW,
+                                    by=DecidedBy.BIOMETRIC if payload.get("biometric") else DecidedBy.TAP,
+                                    note=note,
+                                ))
+                    await self.broadcast_to_phone("session_state_changed", {
+                        "session_id": sess_id,
+                        "state": "active",
+                        "reason": "Resumed via runaway decision",
+                    })
+                    await ws.send_str(json.dumps({
+                        "type": "runaway_decision_ack",
+                        "payload": {"session_id": sess_id, "status": "active", "success": ok}
+                    }))
+                elif verdict_str in ("terminate",):
+                    scope = self.session_mgr.terminate_session(
+                        session_id=sess_id or "",
+                        reason=note,
+                    )
+                    for a_id, fut in list(self.pending_decisions.items()):
+                        if (not action_id or a_id == action_id) and not fut.done():
+                            req = self.pending_metadata.get(a_id, {}).get("request")
+                            if req and req.session == sess_id:
+                                fut.set_result(Decision(
+                                    id=f"d_runaway_term_{uuid.uuid4().hex[:8]}",
+                                    action_id=a_id,
+                                    session=sess_id or "s_default",
+                                    ts=int(time.time()),
+                                    nonce=self.signer.generate_nonce(),
+                                    verdict=Verdict.DENY,
+                                    by=DecidedBy.BIOMETRIC if payload.get("biometric") else DecidedBy.TAP,
+                                    note=note,
+                                ))
+                    await self.broadcast_to_phone("session_state_changed", {
+                        "session_id": sess_id,
+                        "state": "terminated",
+                        "reason": note,
+                    })
+                    await ws.send_str(json.dumps({
+                        "type": "runaway_decision_ack",
+                        "payload": {"session_id": sess_id, "status": "terminated", "success": True}
+                    }))
+                else:
+                    self.session_mgr.pause_session(sess_id or "")
+                    for a_id, fut in list(self.pending_decisions.items()):
+                        if (not action_id or a_id == action_id) and not fut.done():
+                            req = self.pending_metadata.get(a_id, {}).get("request")
+                            if req and req.session == sess_id:
+                                fut.set_result(Decision(
+                                    id=f"d_runaway_deny_{uuid.uuid4().hex[:8]}",
+                                    action_id=a_id,
+                                    session=sess_id or "s_default",
+                                    ts=int(time.time()),
+                                    nonce=self.signer.generate_nonce(),
+                                    verdict=Verdict.DENY,
+                                    by=DecidedBy.BIOMETRIC if payload.get("biometric") else DecidedBy.TAP,
+                                    note=note,
+                                ))
+                    await ws.send_str(json.dumps({
+                        "type": "runaway_decision_ack",
+                        "payload": {"session_id": sess_id, "status": "paused", "success": True}
+                    }))
 
             elif msg_type == "terminate_session":
                 sess_id = payload.get("session_id") or self.session_mgr.active_session_id or ""
@@ -1260,7 +1438,7 @@ class LeashDaemonServer:
                 by=DecidedBy.RULE,
                 note=reason,
             )
-        if "session-paused" in request.scope_flags:
+        if "session-paused" in request.scope_flags and "runaway-behavior-detected" not in request.scope_flags:
             reason = "Execution denied: session is currently paused."
             return Decision(
                 id=f"d_paused_{request.id}",
@@ -1398,6 +1576,48 @@ class LeashDaemonServer:
                         "summary": assessment.summary,
                         "why": assessment.why,
                         "severity": assessment.severity.value,
+                    },
+                )
+            )
+
+        # Immediate Runaway Alert handling
+        is_runaway = (
+            "runaway-behavior-detected" in request.scope_flags
+            or assessment.category in ("runaway-behavior-detected", "runaway-guard")
+            or "R-RUNAWAY-DETECTED" in assessment.rule_ids
+        )
+        if is_runaway:
+            guard = self.session_mgr.session_guards.get(request.session)
+            trip_reason = (guard.get_trip_reason() if guard else None) or assessment.why
+            stats = guard.get_stats() if guard else {}
+            runaway_type = (guard.get_trip_type() if guard else None) or "general"
+
+            self.audit_logger.record_runaway_alert(
+                session_id=request.session,
+                action_id=request.id,
+                reason=trip_reason or "Runaway behavior detected",
+                category=assessment.category,
+                severity=assessment.severity.value,
+                runaway_type=runaway_type,
+                command=request.command,
+                target_path=request.target_path,
+                agent=request.agent,
+                worktree=request.worktree,
+                stats=stats,
+            )
+            asyncio.create_task(
+                self.broadcast_to_phone(
+                    "runaway_alert",
+                    {
+                        "action_id": request.id,
+                        "session_id": request.session,
+                        "reason": trip_reason or "Runaway behavior detected",
+                        "category": assessment.category,
+                        "severity": assessment.severity.value,
+                        "summary": assessment.summary,
+                        "why": assessment.why,
+                        "stats": stats,
+                        "state": "paused",
                     },
                 )
             )
@@ -1563,6 +1783,18 @@ class LeashDaemonServer:
             self.pending_decisions.pop(request.id, None)
             self.pending_metadata.pop(request.id, None)
 
+        # Handle runaway lifecycle state based on user verdict
+        if is_runaway:
+            if decision.verdict == Verdict.ALLOW:
+                self.session_mgr.resume_session(request.session, reset_runaway=True)
+                asyncio.create_task(self.broadcast_to_phone("session_state_changed", {
+                    "session_id": request.session,
+                    "state": "active",
+                    "reason": "Runaway action approved by user",
+                }))
+            else:
+                self.session_mgr.pause_session(request.session)
+
         # 8. Pre-action snapshot for approved risky actions (taken right before execution)
         if decision.verdict == Verdict.ALLOW and (
             assessment.severity != Severity.LOW or taint.tainted
@@ -1712,7 +1944,38 @@ class LeashDaemonServer:
         )
 
         # Feed command result to session runaway guard
-        self.session_mgr.record_action_result(request.session, request, cmd_result.exit_code)
+        trip_reason = self.session_mgr.record_action_result(request.session, request, cmd_result.exit_code)
+        if trip_reason:
+            guard = self.session_mgr.session_guards.get(request.session)
+            stats = guard.get_stats() if guard else {}
+            runaway_type = (guard.get_trip_type() if guard else None) or "repeated_failures"
+            self.audit_logger.record_runaway_alert(
+                session_id=request.session,
+                action_id=request.id,
+                reason=trip_reason,
+                category="runaway-behavior-detected",
+                severity="high",
+                runaway_type=runaway_type,
+                command=request.command,
+                target_path=request.target_path,
+                agent=request.agent,
+                worktree=request.worktree,
+                stats=stats,
+            )
+            await self.broadcast_to_phone("runaway_alert", {
+                "action_id": request.id,
+                "session_id": request.session,
+                "reason": trip_reason,
+                "category": "runaway-behavior-detected",
+                "severity": "high",
+                "stats": stats,
+                "state": "paused",
+            })
+            await self.broadcast_to_phone("session_state_changed", {
+                "session_id": request.session,
+                "state": "paused",
+                "reason": f"Runaway alert: {trip_reason}",
+            })
 
         # Broadcast execution outcome to connected Phone Guard
         await self.broadcast_to_phone("execution_result", {

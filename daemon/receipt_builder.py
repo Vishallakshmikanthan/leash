@@ -149,6 +149,19 @@ class ReceiptBuilder:
                     "verdict": verdict,
                     "ts": e.get("ts", 0),
                 })
+            # Runaway alert
+            elif ev_type in ("runaway_security_alert", "runaway_alert") or cat in ("runaway-behavior-detected", "runaway-guard"):
+                reason = meta.get("reason") or e.get("command") or "Runaway behavior detected"
+                runaway_type = meta.get("runaway_type") or "Loop / Streak"
+                risk_events.append({
+                    "type": "RUNAWAY_ALERT",
+                    "badge": "🛑 RUNAWAY GUARD",
+                    "title": f"Runaway Behavior Detected ({runaway_type})",
+                    "details": reason,
+                    "action": e.get("command") or e.get("target_path") or reason,
+                    "verdict": verdict,
+                    "ts": e.get("ts", 0),
+                })
             # Critical or High severity actions
             elif sev in ("CRITICAL", "HIGH") and verdict == "DENY":
                 ra = e.get("risk_assessment") or {}
