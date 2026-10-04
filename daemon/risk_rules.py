@@ -898,7 +898,19 @@ class ScopeViolationsRule(BaseRule):
         return Severity.MEDIUM
 
     def evaluate(self, request: ActionRequest, parsed_shell: ParsedShell) -> Optional[RuleMatch]:
-        # 1. Explicit scope flags from caller/session manager (excluding runaway lifecycle flags)
+        # 1. Intent drift detection (F2)
+        if "intent-drift-suspected" in request.scope_flags:
+            return RuleMatch(
+                rule_id="R-SCOPE-INTENT-DRIFT",
+                category="intent-drift",
+                severity=Severity.MEDIUM,
+                summary="Action appears to diverge from declared task intent.",
+                why="Command or target file differs significantly from the session's declared task description.",
+                safer_alternative="Verify that this action is strictly necessary for the active task before proceeding.",
+                details={"flags": ["intent-drift-suspected"]},
+            )
+
+        # 2. Explicit scope flags from caller/session manager (excluding runaway lifecycle flags)
         flags = [f for f in request.scope_flags if f not in ("runaway-behavior-detected", "session-paused", "session-terminated")]
         if flags:
             return RuleMatch(

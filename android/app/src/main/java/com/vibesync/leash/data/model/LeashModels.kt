@@ -289,6 +289,8 @@ enum class GuardTab {
     GUARD,
     FEED,
     SESSION,
+    AUDIT,
+    SETTINGS,
     PAIRING
 }
 

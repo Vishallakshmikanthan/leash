@@ -55,6 +55,22 @@ class MainActivity : FragmentActivity() {
         client.connect()
         LeashForegroundService.startService(this)
 
+        // Wire notification approval action handler
+        LeashForegroundService.onNotificationDecision = { actionId, approve ->
+            val bundle = client.pendingActionsQueue.value.find { it.request.id == actionId }
+            if (bundle != null) {
+                if (approve) {
+                    client.approveAction(bundle, DecidedBy.TAP)
+                    triggerApprovedHaptic()
+                    Toast.makeText(this, "Approved via notification", Toast.LENGTH_SHORT).show()
+                } else {
+                    client.denyAction(bundle, DecidedBy.TAP, "Blocked via lock-screen notification")
+                    triggerBlockedHaptic()
+                    Toast.makeText(this, "Blocked via notification", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
         setContent {
             LeashTheme {
                 var selectedTab by remember { mutableStateOf(GuardTab.GUARD) }
@@ -72,6 +88,13 @@ class MainActivity : FragmentActivity() {
                 LaunchedEffect(Unit) {
                     client.incomingActions.collectLatest { bundle ->
                         triggerHapticAlert(bundle.assessment.severity)
+                        LeashForegroundService.showApprovalNotification(
+                            this@MainActivity,
+                            bundle.request.id,
+                            bundle.request.command ?: bundle.request.target_path ?: "-",
+                            bundle.assessment.severity.name,
+                            bundle.request.agent
+                        )
                     }
                 }
 
@@ -157,6 +180,24 @@ class MainActivity : FragmentActivity() {
                                     },
                                     onRewind = { callback ->
                                         client.triggerRewind(callback)
+                                    }
+                                )
+                            }
+                            GuardTab.AUDIT -> {
+                                AuditHistoryScreen(
+                                    feedItems = feedItems,
+                                    onRefresh = {
+                                        client.requestSessionActivity()
+                                    }
+                                )
+                            }
+                            GuardTab.SETTINGS -> {
+                                SettingsScreen(
+                                    onSavePairing = { host, port, secret ->
+                                        client.updatePairing(host, port, secret)
+                                    },
+                                    onDisconnect = {
+                                        client.disconnect()
                                     }
                                 )
                             }
@@ -321,6 +362,34 @@ class MainActivity : FragmentActivity() {
                 colors = NavigationBarItemDefaults.colors(
                     selectedIconColor = LeashPurple,
                     selectedTextColor = LeashPurple,
+                    indicatorColor = LeashSurfaceVariant,
+                    unselectedIconColor = LeashTextSecondary,
+                    unselectedTextColor = LeashTextSecondary
+                )
+            )
+
+            NavigationBarItem(
+                selected = selectedTab == GuardTab.AUDIT,
+                onClick = { onTabSelected(GuardTab.AUDIT) },
+                icon = { Icon(Icons.Default.HistoryEdu, contentDescription = "Audit") },
+                label = { Text("Audit", fontSize = 11.sp) },
+                colors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = LeashCyan,
+                    selectedTextColor = LeashCyan,
+                    indicatorColor = LeashSurfaceVariant,
+                    unselectedIconColor = LeashTextSecondary,
+                    unselectedTextColor = LeashTextSecondary
+                )
+            )
+
+            NavigationBarItem(
+                selected = selectedTab == GuardTab.SETTINGS,
+                onClick = { onTabSelected(GuardTab.SETTINGS) },
+                icon = { Icon(Icons.Default.Tune, contentDescription = "Settings") },
+                label = { Text("Policy", fontSize = 11.sp) },
+                colors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = LeashPrimary,
+                    selectedTextColor = LeashPrimary,
                     indicatorColor = LeashSurfaceVariant,
                     unselectedIconColor = LeashTextSecondary,
                     unselectedTextColor = LeashTextSecondary

@@ -1,5 +1,5 @@
 """
-session/scope.py - Task scope contract enforcement and drift detection (N3).
+session/scope.py - Task scope contract enforcement and drift detection (N3, F2).
 """
 from __future__ import annotations
 
@@ -11,6 +11,82 @@ from typing import Any, Dict, List, Optional, Set
 from urllib.parse import urlparse
 
 from contracts.models import ActionRequest
+
+
+class IntentDriftDetector:
+    """Detects whether an agent action drifts from the declared session task intent (F2)."""
+
+    STOPWORDS = {
+        "a", "an", "the", "and", "or", "in", "on", "at", "to", "for", "with", "by", "of", "from",
+        "this", "that", "is", "are", "be", "as", "into", "it", "its", "run", "do", "make", "work"
+    }
+
+    RISKY_UNINTENDED_KEYWORDS = {
+        "curl", "wget", "nc", "netcat", "eval", "exec", "rm", "delete", "drop", "wipe",
+        "format", "token", "password", "secret", "private", "id_rsa", "canary", "miner"
+    }
+
+    @classmethod
+    def extract_keywords(cls, text: str) -> Set[str]:
+        words = re.findall(r'[a-zA-Z0-9_\-\./]+', text.lower())
+        return {w for w in words if len(w) >= 3 and w not in cls.STOPWORDS}
+
+    @classmethod
+    def evaluate_drift(
+        cls, request: ActionRequest, task_description: Optional[str]
+    ) -> Optional[Dict[str, Any]]:
+        """Evaluates whether an ActionRequest appears drifted from the declared task."""
+        if not task_description or not task_description.strip():
+            return None
+
+        task_clean = task_description.strip().lower()
+        task_keywords = cls.extract_keywords(task_clean)
+        if not task_keywords:
+            return None
+
+        action_text = f"{request.command or ''} {request.target_path or ''} {request.tool_name or ''}".lower()
+        action_keywords = cls.extract_keywords(action_text)
+
+        # 1. Look for explicit risky drift (e.g. task says "fix typo in docs", action downloads remote shell or touches secrets)
+        maintenance_stems = ("test", "doc", "readme", "lint", "format", "typo", "css", "style")
+        is_maintenance_task = any(
+            any(k.startswith(stem) for stem in maintenance_stems)
+            for k in task_keywords
+        )
+        has_risky_divergence = any(k in action_keywords for k in cls.RISKY_UNINTENDED_KEYWORDS)
+
+        if is_maintenance_task and has_risky_divergence:
+            return {
+                "drift": True,
+                "reason": f"Action performs sensitive/network operation ('{request.command or request.target_path}') inconsistent with maintenance task '{task_description}'",
+                "task_description": task_description,
+                "confidence": 0.85,
+            }
+
+        # 2. Check for target file path mismatch if specific files or extensions were mentioned in task
+        explicit_extensions = {ext for ext in [".py", ".kt", ".js", ".ts", ".html", ".css", ".md", ".json"] if ext in task_clean}
+        if explicit_extensions and request.target_path:
+            target_ext = os.path.splitext(request.target_path)[1].lower()
+            if target_ext and target_ext not in explicit_extensions and not any(k in action_keywords for k in task_keywords):
+                return {
+                    "drift": True,
+                    "reason": f"Target path '{request.target_path}' differs in domain from task context '{task_description}'",
+                    "task_description": task_description,
+                    "confidence": 0.70,
+                }
+
+        # 3. Keyword overlap check for substantial actions
+        if len(action_keywords) >= 3:
+            overlap = task_keywords.intersection(action_keywords)
+            if not overlap and any(op in action_text for op in ("--force", "clean", "reset", "curl", "chmod", "kill")):
+                return {
+                    "drift": True,
+                    "reason": f"Destructive command has zero overlap with declared task goals '{task_description}'",
+                    "task_description": task_description,
+                    "confidence": 0.75,
+                }
+
+        return None
 
 
 class ScopeContract:
@@ -78,16 +154,13 @@ class ScopeContract:
         """Extracts hostnames or domains targeted in command strings."""
         hosts: List[str] = []
 
-        # 1. Regex match for explicit URLs
         url_matches = re.findall(r'(?:https?|ftp|ssh|git)://([^/\s\'":]+)', cmd_str, re.IGNORECASE)
         for u in url_matches:
             hosts.append(u.lower())
 
-        # 2. Host extraction for CLI tools (e.g. curl http://..., ssh user@host, ping host)
         try:
             tokens = shlex.split(cmd_str, posix=False)
             for idx, token in enumerate(tokens):
-                # Clean quotes
                 clean_tok = token.strip("\"'")
                 if "@" in clean_tok and not clean_tok.startswith("-"):
                     parts = clean_tok.split("@", 1)
@@ -104,7 +177,6 @@ class ScopeContract:
 
     def _extract_executables(self, cmd_str: str) -> List[str]:
         """Extracts all command executables from chained pipelines or operators."""
-        # Split on standard shell operator separators
         segments = re.split(r'\s*(?:&&|\|\||;|\|)\s*', cmd_str)
         executables: List[str] = []
 
@@ -131,9 +203,7 @@ class ScopeContract:
             tokens = shlex.split(cmd_str, posix=False)
             for tok in tokens[1:]:
                 clean = tok.strip("\"'")
-                # Exclude flags
                 if clean.startswith("-") or clean.startswith("/"):
-                    # On windows /? or /s is a flag, unless it's a full path
                     if len(clean) > 2 and clean[1] == ":" or clean.startswith("//") or clean.startswith("/"):
                         paths.append(clean)
                 elif any(sep in clean for sep in ("/", "\\")) or "." in clean:
@@ -142,13 +212,13 @@ class ScopeContract:
             pass
         return paths
 
-    def validate_action(self, request: ActionRequest) -> List[str]:
+    def validate_action(
+        self, request: ActionRequest, task_description: Optional[str] = None
+    ) -> List[str]:
         """Inspects an ActionRequest and returns drift flags if outside scope."""
         flags: List[str] = []
 
-        # -------------------------------------------------------------
         # 1. Path Scope & Traversal Check
-        # -------------------------------------------------------------
         paths_to_verify: List[str] = []
         if request.target_path:
             paths_to_verify.append(request.target_path)
@@ -160,19 +230,16 @@ class ScopeContract:
         base_dir = request.cwd if request.cwd and request.cwd != "." else None
 
         for p in paths_to_verify:
-            # Traversal detection
             if ".." in p:
                 norm = os.path.normpath(p)
                 if norm.startswith("..") or ".." in norm.split(os.sep):
                     if "path-traversal-detected" not in flags:
                         flags.append("path-traversal-detected")
 
-            # Check inside allowed boundaries
             if not self._is_path_allowed(p, base_dir=base_dir):
                 if "outside-allowed-paths" not in flags:
                     flags.append("outside-allowed-paths")
 
-            # Sensitive watchlist check
             p_clean = p.replace("\\", "/").lower()
             for item in self.watchlist:
                 item_clean = item.lower()
@@ -181,23 +248,18 @@ class ScopeContract:
                         flags.append("sensitive-watchlist-hit")
                     break
 
-        # -------------------------------------------------------------
         # 2. Command Scope Check
-        # -------------------------------------------------------------
         if request.command and self.allowed_commands:
             allowed_set = {c.lower() for c in self.allowed_commands}
             executables = self._extract_executables(request.command)
             for exe in executables:
-                # Strip common extensions like .exe, .bat, .sh
                 base_name = exe.rsplit(".", 1)[0] if "." in exe else exe
                 if exe not in allowed_set and base_name not in allowed_set:
                     if "outside-allowed-commands" not in flags:
                         flags.append("outside-allowed-commands")
                     break
 
-        # -------------------------------------------------------------
         # 3. Host Scope Check
-        # -------------------------------------------------------------
         if request.command:
             targeted_hosts = self._extract_hosts_from_command(request.command)
             for host in targeted_hosts:
@@ -206,20 +268,37 @@ class ScopeContract:
                         flags.append("outside-allowed-hosts")
                     break
 
+        # 4. Intent Drift Check (F2)
+        if task_description:
+            drift_res = IntentDriftDetector.evaluate_drift(request, task_description)
+            if drift_res and drift_res.get("drift"):
+                if "intent-drift-suspected" not in flags:
+                    flags.append("intent-drift-suspected")
+
         return flags
 
-    def check_drift(self, request: ActionRequest) -> Dict[str, Any]:
+    def check_drift(
+        self, request: ActionRequest, task_description: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Provides detailed structured report on scope drift."""
-        flags = self.validate_action(request)
+        flags = self.validate_action(request, task_description=task_description)
+        intent_info = (
+            IntentDriftDetector.evaluate_drift(request, task_description)
+            if task_description
+            else None
+        )
         return {
             "in_scope": len(flags) == 0,
             "drift_detected": len(flags) > 0,
             "flags": flags,
+            "intent_drift": intent_info,
             "allowed_paths": self.allowed_paths,
             "allowed_commands": self.allowed_commands,
             "allowed_hosts": list(self.allowed_hosts),
         }
 
-    def is_in_scope(self, request: ActionRequest) -> bool:
+    def is_in_scope(
+        self, request: ActionRequest, task_description: Optional[str] = None
+    ) -> bool:
         """Convenience boolean check for clean scope compliance."""
-        return len(self.validate_action(request)) == 0
+        return len(self.validate_action(request, task_description=task_description)) == 0

@@ -31,7 +31,9 @@ from contracts.models import (
 
 from daemon.audit_logger import AuditLogger
 from daemon.config import DaemonConfig
+from daemon.office_kit import OfficeKitClipboard, OfficeKitTransfer
 from daemon.policy_evaluator import PolicyEvaluator
+from daemon.preview_manager import ScriptPreviewManager
 from daemon.receipt_builder import ReceiptBuilder
 from gates.secret_fence import CanaryManager, SecretRedactor
 from session.manager import SessionManager
@@ -131,6 +133,12 @@ class LeashDaemonServer:
         self.app.router.add_post("/api/package-gate/allow-once", self._handle_post_package_allow_once)
         self.app.router.add_get("/api/package-gate/status", self._handle_get_package_gate_status)
         self.app.router.add_post("/explain", self._handle_post_explain)
+        self.app.router.add_get("/preview", self._handle_get_preview)
+        self.app.router.add_post("/preview", self._handle_post_preview)
+        self.app.router.add_post("/sessions/{session_id}/notify", self._handle_post_session_notify)
+        self.app.router.add_get("/sessions/{session_id}/diff", self._handle_get_session_diff)
+        self.app.router.add_get("/office-kit/clipboard", self._handle_get_office_kit_clipboard)
+        self.app.router.add_post("/office-kit/clipboard", self._handle_post_office_kit_clipboard)
 
 
         # Ensure at least one session exists
@@ -926,6 +934,111 @@ class LeashDaemonServer:
             resp["action_id"] = action_id
         return web.json_response(resp)
 
+    async def _handle_get_preview(self, request: web.Request) -> web.Response:
+        """HTTP endpoint returning script preview analysis before execution (F3)."""
+        target = request.query.get("target") or request.query.get("command") or ""
+        preview = ScriptPreviewManager.generate_preview(target)
+        return web.json_response(preview.to_dict())
+
+    async def _handle_post_preview(self, request: web.Request) -> web.Response:
+        """HTTP endpoint returning script preview analysis via POST (F3)."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        target = body.get("target") or body.get("command") or ""
+        preview = ScriptPreviewManager.generate_preview(target)
+        return web.json_response(preview.to_dict())
+
+    async def _handle_post_session_notify(self, request: web.Request) -> web.Response:
+        """HTTP endpoint for emitting Done, Stuck, or Idle lifecycle notifications (N11)."""
+        session_id = request.match_info.get("session_id")
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        status = body.get("status", "done")
+        if status == "done":
+            event = self.session_mgr.notify_done(
+                session_id, exit_code=int(body.get("exit_code", 0)), message=body.get("message")
+            )
+        elif status == "stuck":
+            event = self.session_mgr.notify_stuck(
+                session_id, reason=body.get("reason", "unknown error"), details=body.get("details")
+            )
+        elif status == "idle":
+            event = self.session_mgr.notify_idle(
+                session_id, idle_seconds=float(body.get("idle_seconds", 30.0))
+            )
+        else:
+            event = {"session_id": session_id, "status": status, "message": body.get("message", "")}
+
+        await self.broadcast_to_phone("agent_status", event)
+        return web.json_response({"status": "broadcasted", "event": event})
+
+    async def _handle_get_session_diff(self, request: web.Request) -> web.Response:
+        """HTTP endpoint returning git diff of session worktree for Office Kit transfer."""
+        session_id = request.match_info.get("session_id")
+        session = self.session_mgr.get_session(session_id)
+        if not session:
+            return web.json_response({"error": "Session not found"}, status=404)
+        worktree = session.worktree_path
+        diff_text = ""
+        try:
+            res = subprocess.run(["git", "diff", "HEAD"], cwd=worktree, capture_output=True, text=True, timeout=3.0)
+            if res.returncode == 0:
+                diff_text = res.stdout
+        except Exception as e:
+            diff_text = f"Error diffing worktree: {e}"
+        return web.json_response({
+            "session_id": session_id,
+            "diff": diff_text,
+            "worktree": worktree,
+        })
+
+    async def _handle_get_office_kit_clipboard(self, request: web.Request) -> web.Response:
+        """HTTP endpoint checking system clipboard for out-of-band LEASH-DECISION tokens."""
+        clip_text = OfficeKitClipboard.get_clipboard_text() or ""
+        matched = False
+        settled_action = None
+        if clip_text.startswith("LEASH-DECISION:"):
+            for action_id, fut in list(self.pending_decisions.items()):
+                meta = self.pending_metadata.get(action_id, {})
+                req = meta.get("request")
+                sess_id = req.session if req else self.default_session_id or "s_default"
+                parsed = OfficeKitClipboard.parse_decision_token(clip_text, sess_id, self.signer)
+                if parsed and parsed.valid and parsed.action_id == action_id and not fut.done():
+                    dec = Decision(
+                        id=f"d_clip_{action_id}",
+                        action_id=action_id,
+                        session=sess_id,
+                        ts=int(time.time()),
+                        nonce=parsed.nonce,
+                        verdict=parsed.verdict,
+                        by=DecidedBy.TAP,
+                        note="Approved via Office Kit shared clipboard channel.",
+                    )
+                    fut.set_result(dec)
+                    matched = True
+                    settled_action = action_id
+                    break
+        return web.json_response({
+            "clipboard_present": bool(clip_text),
+            "is_decision_token": clip_text.startswith("LEASH-DECISION:"),
+            "matched_action": settled_action,
+            "settled": matched,
+        })
+
+    async def _handle_post_office_kit_clipboard(self, request: web.Request) -> web.Response:
+        """HTTP endpoint writing text/diff/receipt to system clipboard."""
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        text = body.get("text", "")
+        ok = OfficeKitClipboard.set_clipboard_text(text)
+        return web.json_response({"success": ok, "length": len(text)})
+
     # -------------------------------------------------------------------------
     # WebSocket Message Processing
     # -------------------------------------------------------------------------
@@ -1100,6 +1213,47 @@ class LeashDaemonServer:
                     "payload": {
                         "action_id": action_id,
                         **expl.to_dict(),
+                    }
+                }))
+
+            # 2d. On-demand Script Preview (F3)
+            elif msg_type == "get_script_preview":
+                target = payload.get("target") or payload.get("command") or ""
+                preview = ScriptPreviewManager.generate_preview(target)
+                await ws.send_str(json.dumps({
+                    "type": "script_preview_result",
+                    "payload": preview.to_dict(),
+                }))
+
+            # 2e. Office Kit Clipboard Decision Check
+            elif msg_type == "check_clipboard_decision":
+                clip_text = OfficeKitClipboard.get_clipboard_text() or ""
+                matched_id = None
+                if clip_text.startswith("LEASH-DECISION:"):
+                    for action_id, fut in list(self.pending_decisions.items()):
+                        meta = self.pending_metadata.get(action_id, {})
+                        req = meta.get("request")
+                        sess_id = req.session if req else self.default_session_id or "s_default"
+                        parsed = OfficeKitClipboard.parse_decision_token(clip_text, sess_id, self.signer)
+                        if parsed and parsed.valid and parsed.action_id == action_id and not fut.done():
+                            dec = Decision(
+                                id=f"d_clip_{action_id}",
+                                action_id=action_id,
+                                session=sess_id,
+                                ts=int(time.time()),
+                                nonce=parsed.nonce,
+                                verdict=parsed.verdict,
+                                by=DecidedBy.TAP,
+                                note="Approved via Office Kit shared clipboard channel.",
+                            )
+                            fut.set_result(dec)
+                            matched_id = action_id
+                            break
+                await ws.send_str(json.dumps({
+                    "type": "clipboard_check_result",
+                    "payload": {
+                        "matched": matched_id is not None,
+                        "action_id": matched_id,
                     }
                 }))
 

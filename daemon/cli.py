@@ -15,9 +15,12 @@ from pathlib import Path
 
 from daemon.audit_logger import AuditLogger
 from daemon.config import DaemonConfig
+from daemon.office_kit import OfficeKitClipboard, OfficeKitTransfer
+from daemon.preview_manager import ScriptPreviewManager
 from daemon.receipt_builder import ReceiptBuilder
 from daemon.server import LeashDaemonServer
 from session.manager import SessionManager
+from shim.git_guard import GitGuard
 from shim.shell_wrapper import ShellShim
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -277,6 +280,115 @@ def cmd_exec(args: argparse.Namespace) -> None:
         sys.exit(exit_code)
 
 
+def cmd_git(args: argparse.Namespace) -> None:
+    git_args = args.git_args
+    if git_args and git_args[0] == "--":
+        git_args = git_args[1:]
+    guard = GitGuard()
+    exit_code = guard.run_git(git_args)
+    sys.exit(exit_code)
+
+
+def cmd_preview(args: argparse.Namespace) -> None:
+    target = args.target
+    preview = ScriptPreviewManager.generate_preview(target)
+    if args.json:
+        print(json.dumps(preview.to_dict(), indent=2))
+        return
+
+    print("\n=== LEASH SCRIPT PREVIEW (F3) ===")
+    print(f"Target:      {preview.target} ({'Remote URL' if preview.is_remote else 'Local file'})")
+    print(f"Lines:       {preview.total_lines}")
+    print(f"Summary:     {preview.summary}")
+    print(f"Why:         {preview.why}")
+    print(f"Alternative: {preview.safer_alternative}")
+    if preview.risks_detected:
+        print("\nIdentified Risks:")
+        for r in preview.risks_detected:
+            print(f"  - {r}")
+    print("\n--- Script Head (First 50 lines) ---")
+    print(preview.head_snippet)
+    print("===================================\n")
+
+
+def cmd_rewind(args: argparse.Namespace) -> None:
+    session_mgr = SessionManager(Path("."))
+    session_id = args.session
+    if not session_id:
+        sessions = session_mgr.list_sessions(active_only=True) or session_mgr.list_sessions()
+        if sessions:
+            session_id = sessions[0].session_id
+        else:
+            print("No sessions found to rewind.")
+            sys.exit(1)
+
+    ok = session_mgr.rewind(session_id, git_ref=args.snapshot)
+    if ok:
+        print(f"[+] Successfully rewound session '{session_id}' to {args.snapshot or 'latest snapshot'}.")
+    else:
+        print(f"[-] Rewind failed for session '{session_id}'. Ensure snapshot ref exists and covers repo files only.")
+        sys.exit(1)
+
+
+def cmd_office_kit(args: argparse.Namespace) -> None:
+    session_mgr = SessionManager(Path("."))
+    transfer = OfficeKitTransfer()
+    subaction = args.action
+
+    if subaction == "sync-diff":
+        session_id = args.session or session_mgr.active_session_id
+        changed = session_mgr.get_changed_files(session_id) if session_id else []
+        diff_text = f"# Diff for session {session_id}\n# Changed files: {len(changed)}\n"
+        for c in changed:
+            diff_text += f"- {c.get('path', 'unknown')} ({c.get('status', 'modified')})\n"
+        transfer.sync_diff_to_clipboard(diff_text)
+        print(f"[+] Synced diff for session {session_id} to clipboard.")
+    elif subaction == "clip-decision":
+        clip = OfficeKitClipboard.get_clipboard_text() or ""
+        print(f"Clipboard content: {clip[:80]}...")
+    elif subaction == "export":
+        session_id = args.session or session_mgr.active_session_id
+        receipt_md = session_mgr.get_session_receipt(session_id) or "# Leash Receipt"
+        path = transfer.export_receipt(session_id or "default", receipt_md)
+        print(f"[+] Receipt exported to {path}")
+
+
+def cmd_session(args: argparse.Namespace) -> None:
+    session_mgr = SessionManager(Path("."))
+    action = args.action
+    session_id = args.session
+
+    if action == "list":
+        sessions = session_mgr.list_sessions()
+        print("\n=== RECORDED LEASH SESSIONS ===")
+        for s in sessions:
+            print(f"- {s.session_id} | Agent: {s.agent} | State: {s.state.value} | Worktree: {s.worktree_path}")
+        print("===============================\n")
+    elif action == "pause":
+        if not session_id:
+            print("Specify --session <id>")
+            return
+        ok = session_mgr.pause_session(session_id)
+        print(f"[+] Session {session_id} paused: {ok}")
+    elif action == "resume":
+        if not session_id:
+            print("Specify --session <id>")
+            return
+        ok = session_mgr.resume_session(session_id)
+        print(f"[+] Session {session_id} resumed: {ok}")
+    elif action == "terminate":
+        if not session_id:
+            print("Specify --session <id>")
+            return
+        s = session_mgr.terminate_session(session_id, reason="User terminated from CLI")
+        print(f"[+] Session {session_id} terminated: {bool(s)}")
+
+
+def cmd_demo(args: argparse.Namespace) -> None:
+    from demo.run_demo import run_demo_suite
+    run_demo_suite()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="leash", description="Leash: Phone-based safety layer for AI coding agents.")
     subparsers = parser.add_subparsers(dest="command")
@@ -304,8 +416,39 @@ def main() -> None:
     exec_parser.add_argument("--session", default=None, help="Session ID")
     exec_parser.add_argument("cmd", nargs=argparse.REMAINDER, help="Command to execute")
 
-    # leash run -- <command>
-    run_parser = subparsers.add_parser("run", help="Run agent in an isolated Leash session")
+    # leash git <git_args...>
+    git_parser = subparsers.add_parser("git", help="Run git commands safely through Leash Git Guard")
+    git_parser.add_argument("git_args", nargs=argparse.REMAINDER, help="Git arguments to execute")
+
+    # leash preview <target>
+    preview_parser = subparsers.add_parser("preview", help="Preview and inspect a downloaded script before approval (F3)")
+    preview_parser.add_argument("target", help="URL or file path of script to inspect")
+    preview_parser.add_argument("--json", action="store_true", help="Output preview as JSON")
+
+    # leash rewind [--session S_ID] [--snapshot REF]
+    rewind_parser = subparsers.add_parser("rewind", help="Restore repository files to point-in-time snapshot (N4)")
+    rewind_parser.add_argument("--session", default=None, help="Session ID to rewind")
+    rewind_parser.add_argument("--snapshot", default=None, help="Specific snapshot ref or action ID")
+
+    # leash session <list|pause|resume|terminate> [--session S_ID]
+    sess_parser = subparsers.add_parser("session", help="Manage session lifecycle and safety states")
+    sess_parser.add_argument("action", choices=["list", "pause", "resume", "terminate"], help="Action to perform")
+    sess_parser.add_argument("--session", default=None, help="Session ID")
+
+    # leash office-kit <sync-diff|clip-decision|export>
+    ok_parser = subparsers.add_parser("office-kit", help="Office Kit clipboard and file transfer utilities")
+    ok_parser.add_argument("action", choices=["sync-diff", "clip-decision", "export"], help="Action to perform")
+    ok_parser.add_argument("--session", default=None, help="Session ID")
+
+    # leash demo
+    subparsers.add_parser("demo", help="Run the automated 4-scene Leash demo runner")
+
+    # leash run [--task ...] [--scope-paths ...] -- <command>
+    run_parser = subparsers.add_parser("run", help="Run agent in an isolated Leash session with task scope")
+    run_parser.add_argument("--task", default=None, help="Task description for intent drift tracking (F2)")
+    run_parser.add_argument("--scope-paths", nargs="*", default=None, help="Allowed path boundaries")
+    run_parser.add_argument("--scope-cmds", nargs="*", default=None, help="Allowed command executables")
+    run_parser.add_argument("--scope-hosts", nargs="*", default=None, help="Allowed network hosts")
     run_parser.add_argument("agent_cmd", nargs=argparse.REMAINDER, help="Agent command to execute")
 
     args = parser.parse_args()
@@ -321,6 +464,18 @@ def main() -> None:
         cmd_audit(args)
     elif args.command == "exec":
         cmd_exec(args)
+    elif args.command == "git":
+        cmd_git(args)
+    elif args.command == "preview":
+        cmd_preview(args)
+    elif args.command == "rewind":
+        cmd_rewind(args)
+    elif args.command == "session":
+        cmd_session(args)
+    elif args.command == "office-kit":
+        cmd_office_kit(args)
+    elif args.command == "demo":
+        cmd_demo(args)
     elif args.command == "run":
         if not args.agent_cmd:
             print("Error: Specify agent command after '--'. Example: leash run -- python agent.py")

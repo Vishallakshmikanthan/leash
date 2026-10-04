@@ -213,10 +213,10 @@ class SessionManager:
         request.taint = taint
 
 
-        # 5. Detect scope drift against declared contract (allowed paths, commands, hosts)
+        # 5. Detect scope drift against declared contract (allowed paths, commands, hosts, and task intent)
         scope_contract = self.session_scopes.get(session_id)
         if scope_contract:
-            drift_flags = scope_contract.validate_action(request)
+            drift_flags = scope_contract.validate_action(request, task_description=session.task_description)
             for flag in drift_flags:
                 if flag not in request.scope_flags:
                     request.scope_flags.append(flag)
@@ -471,6 +471,57 @@ class SessionManager:
             "taint": self.get_taint_context(session_id).to_dict(),
             "actions_count": len(self.session_action_history.get(session_id, [])),
         }
+
+    def notify_done(
+        self, session_id: str, exit_code: int = 0, message: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Records and prepares a 'session_done' notification (N11)."""
+        session = self.sessions.get(session_id)
+        agent_name = session.agent if session else "coding-agent"
+        event = {
+            "session_id": session_id,
+            "agent": agent_name,
+            "status": "done",
+            "exit_code": exit_code,
+            "timestamp": int(time.time()),
+            "message": message or f"Agent '{agent_name}' finished task execution (Exit: {exit_code}).",
+        }
+        logger.info(f"Agent done notification for {session_id}: {event['message']}")
+        return event
+
+    def notify_stuck(
+        self, session_id: str, reason: str, details: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Records and prepares a 'session_stuck' notification (N11)."""
+        session = self.sessions.get(session_id)
+        agent_name = session.agent if session else "coding-agent"
+        event = {
+            "session_id": session_id,
+            "agent": agent_name,
+            "status": "stuck",
+            "reason": reason,
+            "details": details or {},
+            "timestamp": int(time.time()),
+            "message": f"Agent '{agent_name}' is stuck or looping: {reason}",
+        }
+        logger.warning(f"Agent stuck notification for {session_id}: {reason}")
+        return event
+
+    def notify_idle(
+        self, session_id: str, idle_seconds: float
+    ) -> Dict[str, Any]:
+        """Records and prepares a 'session_idle' notification (N11)."""
+        session = self.sessions.get(session_id)
+        agent_name = session.agent if session else "coding-agent"
+        event = {
+            "session_id": session_id,
+            "agent": agent_name,
+            "status": "idle",
+            "idle_seconds": idle_seconds,
+            "timestamp": int(time.time()),
+            "message": f"Agent '{agent_name}' has been idle for {int(idle_seconds)}s waiting for input.",
+        }
+        return event
 
     def shutdown_all(self, cleanup_worktrees: bool = True) -> None:
         """Cleanly terminates all active sessions."""

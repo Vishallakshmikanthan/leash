@@ -18,6 +18,7 @@ try:
         SCENE_2_PACKAGE_GATE,
         SCENE_3_NORMAL_DEV,
         SCENE_4_REWIND_TEST,
+        SCENE_5_PREVIEW_AND_SCOPE,
         ScenarioStep,
     )
 except ImportError:
@@ -26,6 +27,7 @@ except ImportError:
         SCENE_2_PACKAGE_GATE,
         SCENE_3_NORMAL_DEV,
         SCENE_4_REWIND_TEST,
+        SCENE_5_PREVIEW_AND_SCOPE,
         ScenarioStep,
     )
 from shim.shell_wrapper import ShellShim
@@ -83,7 +85,7 @@ def main():
     from session.manager import SessionManager
 
     parser = argparse.ArgumentParser(description="Reference Agent Runner")
-    parser.add_argument("--scenario", choices=["1", "2", "3", "4", "all"], default="all")
+    parser.add_argument("--scenario", choices=["1", "2", "3", "4", "5", "all"], default="all")
     args = parser.parse_args()
 
     config = DaemonConfig.load_default()
@@ -101,6 +103,7 @@ def main():
         "2": SCENE_2_PACKAGE_GATE,
         "3": SCENE_3_NORMAL_DEV,
         "4": SCENE_4_REWIND_TEST,
+        "5": SCENE_5_PREVIEW_AND_SCOPE,
     }
 
     if args.scenario == "all":
