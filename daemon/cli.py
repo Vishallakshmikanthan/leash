@@ -23,22 +23,27 @@ from shim.shell_wrapper import ShellShim
 
 def cmd_pair(args: argparse.Namespace) -> None:
     config = DaemonConfig.load_default()
+    qr_uri = f"leash://pair?host={config.host}&port={config.port}&secret={config.shared_secret}&version=1.0"
     pairing_info = {
         "host": config.host,
         "port": config.port,
         "shared_secret": config.shared_secret,
         "protocol_version": "1.0",
+        "qr_uri": qr_uri,
+        "created_at": int(time.time()),
     }
     config.pairing_code_file.parent.mkdir(parents=True, exist_ok=True)
     with open(config.pairing_code_file, "w", encoding="utf-8") as f:
         json.dump(pairing_info, f, indent=2)
 
     print("=== LEASH PAIRING CREDENTIALS ===")
-    print(f"Host: {config.host}")
-    print(f"Port: {config.port}")
-    print(f"Secret: {config.shared_secret}")
+    print(f"Host:       {config.host}")
+    print(f"Port:       {config.port}")
+    print(f"Secret:     {config.shared_secret}")
+    print(f"QR URI:     {qr_uri}")
     print(f"Pairing info written to: {config.pairing_code_file}")
     print("================================")
+
 
 
 def cmd_report(args: argparse.Namespace) -> None:

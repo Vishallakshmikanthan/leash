@@ -8,6 +8,7 @@ import json
 import logging
 import time
 import uuid
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 
 from aiohttp import web
@@ -32,6 +33,17 @@ from session.manager import SessionManager
 logger = logging.getLogger("leash.daemon")
 
 
+@dataclass
+class ConnectedPhone:
+    ws: web.WebSocketResponse
+    device_id: Optional[str] = None
+    device_name: Optional[str] = None
+    authenticated: bool = False
+    connected_at: float = field(default_factory=time.time)
+    last_heartbeat: float = field(default_factory=time.time)
+    client_ip: str = "unknown"
+
+
 class LeashDaemonServer:
     """Core daemon managing WebSocket transport, security evaluation, and approvals."""
 
@@ -52,6 +64,9 @@ class LeashDaemonServer:
 
         # Active phone client connections (WebSocket)
         self.connected_clients: Set[web.WebSocketResponse] = set()
+        self.authenticated_clients: Set[web.WebSocketResponse] = set()
+        self.clients: Dict[web.WebSocketResponse, ConnectedPhone] = {}
+
         self.pending_decisions: Dict[str, asyncio.Future[Decision]] = {}
         self.pending_metadata: Dict[str, Dict[str, Any]] = {}
 
@@ -68,8 +83,8 @@ class LeashDaemonServer:
         self.local_decider = decider
 
     def has_decision_channel(self) -> bool:
-        """Checks if a decision channel (Phone Guard, local decider, or dev mode) is available."""
-        if len(self.connected_clients) > 0:
+        """Checks if a decision channel (authenticated Phone Guard, local decider, or dev mode) is available."""
+        if len(self.authenticated_clients) > 0:
             return True
         if self.local_decider is not None:
             return True
@@ -84,6 +99,7 @@ class LeashDaemonServer:
         self.app.router.add_get("/ws", self._handle_ws_route)
         self.app.router.add_get("/status", self._handle_status)
         self.app.router.add_get("/health", self._handle_status)
+        self.app.router.add_get("/pairing", self._handle_pairing)
         self.app.router.add_get("/pending", self._handle_get_pending)
         self.app.router.add_post("/action", self._handle_post_action)
         self.app.router.add_post("/decision", self._handle_post_decision)
@@ -117,6 +133,8 @@ class LeashDaemonServer:
             except Exception:
                 pass
         self.connected_clients.clear()
+        self.authenticated_clients.clear()
+        self.clients.clear()
 
         if self.runner:
             await self.runner.cleanup()
@@ -141,33 +159,84 @@ class LeashDaemonServer:
         ws = web.WebSocketResponse()
         await ws.prepare(request)
 
-        self.connected_clients.add(ws)
         client_ip = request.remote or "unknown"
+        phone = ConnectedPhone(ws=ws, client_ip=client_ip)
+        self.clients[ws] = phone
+        self.connected_clients.add(ws)
+
+        # In dev mode, auto-authenticate connection for test convenience unless strict
+        if self.config.dev_mode:
+            phone.authenticated = True
+            self.authenticated_clients.add(ws)
+
         logger.info(f"Phone Guard connected via WebSocket from {client_ip}")
 
         try:
             async for msg in ws:
                 if msg.type == web.WSMsgType.TEXT:
-                    await self._process_incoming_ws_message(msg.data)
+                    await self._process_incoming_ws_message(ws, msg.data)
                 elif msg.type == web.WSMsgType.ERROR:
                     logger.warning(f"WebSocket connection closed with error: {ws.exception()}")
         finally:
             self.connected_clients.discard(ws)
+            self.authenticated_clients.discard(ws)
+            self.clients.pop(ws, None)
             logger.info(f"Phone Guard disconnected from {client_ip}")
+
+            # Enforce fail-closed if no decision channel remains
+            if not self.has_decision_channel() and not self.config.dev_mode:
+                for action_id, fut in list(self.pending_decisions.items()):
+                    if not fut.done():
+                        fail_dec = Decision(
+                            id=f"d_fail_closed_{action_id}",
+                            action_id=action_id,
+                            session=self.pending_metadata.get(action_id, {}).get("request", ActionRequest(
+                                id=action_id, session=self.default_session_id or "s_default", ts=int(time.time()), nonce="", kind=ActionKind.SHELL, agent="", cwd=""
+                            )).session,
+                            ts=int(time.time()),
+                            nonce=self.signer.generate_nonce(),
+                            verdict=Verdict.DENY,
+                            by=DecidedBy.TIMEOUT,
+                            note="Connection severed to Phone Guard: failed closed.",
+                        )
+                        fut.set_result(fail_dec)
 
         return ws
 
     async def _handle_status(self, request: web.Request) -> web.Response:
+        phones_info = [
+            {
+                "device_id": c.device_id,
+                "device_name": c.device_name,
+                "authenticated": c.authenticated,
+                "connected_at": c.connected_at,
+                "last_heartbeat": c.last_heartbeat,
+                "ip": c.client_ip,
+            }
+            for c in self.clients.values()
+        ]
         return web.json_response({
             "status": "ok",
-            "version": "0.1.0",
+            "version": "1.0.0",
             "connected_phones": len(self.connected_clients),
+            "authenticated_phones": len(self.authenticated_clients),
+            "phones": phones_info,
             "pending_decisions": len(self.pending_decisions),
             "default_session": self.default_session_id,
             "decision_channel_available": self.has_decision_channel(),
             "auto_allow_low_risk": self.config.auto_allow_low_risk,
             "fail_closed_high_risk": self.config.fail_closed_high_risk,
             "dev_mode": self.config.dev_mode,
+        })
+
+    async def _handle_pairing(self, request: web.Request) -> web.Response:
+        return web.json_response({
+            "host": self.config.host,
+            "port": self.config.port,
+            "shared_secret": self.config.shared_secret,
+            "protocol_version": "1.0",
+            "qr_uri": f"leash://pair?host={self.config.host}&port={self.config.port}&secret={self.config.shared_secret}",
+            "status": "ready",
         })
 
     async def _handle_get_pending(self, request: web.Request) -> web.Response:
@@ -278,18 +347,79 @@ class LeashDaemonServer:
     # WebSocket Message Processing
     # -------------------------------------------------------------------------
 
-    async def _process_incoming_ws_message(self, raw_msg: str) -> None:
+    async def _process_incoming_ws_message(self, ws: web.WebSocketResponse, raw_msg: str) -> None:
         if not raw_msg:
             return
+        phone = self.clients.get(ws)
+        if not phone:
+            return
+
         try:
             data = json.loads(raw_msg)
             msg_type = data.get("type")
+            payload = data.get("payload", {})
 
-            if msg_type == "decision":
-                decision_data = data.get("payload", {})
-                decision = Decision.from_dict(decision_data)
+            # 1. Pairing & Authentication Handshake
+            if msg_type in ("auth", "pair"):
+                device_id = payload.get("device_id", "phone_guard")
+                device_name = payload.get("device_name", "Android Guard")
+                ts = payload.get("ts")
+                nonce = payload.get("nonce", "")
+                sig = payload.get("sig", "")
 
-                # Verify HMAC signature unless dev_mode allows unsigned
+                clean_dict = {
+                    "device_id": device_id,
+                    "device_name": device_name,
+                    "nonce": nonce,
+                    "ts": ts,
+                }
+                canon_bytes = json.dumps(clean_dict, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                valid = self.signer.verify(canon_bytes, sig, int(ts) if ts is not None else 0, nonce)
+
+                if valid or self.config.dev_mode:
+                    phone.authenticated = True
+                    phone.device_id = device_id
+                    phone.device_name = device_name
+                    phone.last_heartbeat = time.time()
+                    self.authenticated_clients.add(ws)
+
+                    ack_nonce = self.signer.generate_nonce()
+                    ack_ts = int(time.time())
+                    ack_dict = {
+                        "nonce": ack_nonce,
+                        "server_version": "1.0",
+                        "session_id": self.default_session_id or "s_default",
+                        "status": "authenticated",
+                        "ts": ack_ts,
+                    }
+                    ack_sig = self.signer.sign(
+                        json.dumps(ack_dict, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                    )
+                    ack_dict["sig"] = ack_sig
+                    await ws.send_str(json.dumps({"type": "auth_ack", "payload": ack_dict}))
+                    logger.info(f"Phone Guard authenticated successfully: {device_id} ({device_name})")
+                else:
+                    logger.warning(f"Phone Guard authentication failed from {phone.client_ip}")
+                    err_msg = {
+                        "type": "auth_error",
+                        "payload": {"reason": "Authentication failed: invalid signature, timestamp drift, or replayed nonce"},
+                    }
+                    await ws.send_str(json.dumps(err_msg))
+                    await ws.close(code=4001, message=b"Authentication failed")
+
+            # 2. Decision Exchange
+            elif msg_type == "decision":
+                if not phone.authenticated and not self.config.dev_mode:
+                    logger.warning(f"Unauthenticated decision rejected from {phone.client_ip}")
+                    await ws.send_str(json.dumps({
+                        "type": "error",
+                        "payload": {"code": "UNAUTHENTICATED", "message": "Authentication required."}
+                    }))
+                    return
+
+                decision = Decision.from_dict(payload)
+
+                # Verify HMAC signature and freshness
                 valid = True
                 if decision.sig:
                     valid = self.signer.verify(
@@ -303,6 +433,14 @@ class LeashDaemonServer:
 
                 if not valid:
                     logger.warning(f"Rejected invalid signature for decision {decision.id}")
+                    await ws.send_str(json.dumps({
+                        "type": "error",
+                        "payload": {
+                            "action_id": decision.action_id,
+                            "code": "INVALID_SIGNATURE",
+                            "message": "Signature verification failed, expired timestamp, or replayed nonce",
+                        }
+                    }))
                     return
 
                 action_id = decision.action_id
@@ -310,21 +448,59 @@ class LeashDaemonServer:
                     fut = self.pending_decisions[action_id]
                     if not fut.done():
                         fut.set_result(decision)
+                        # Send reliable confirmation ack back to phone
+                        await ws.send_str(json.dumps({
+                            "type": "decision_ack",
+                            "payload": {
+                                "action_id": action_id,
+                                "decision_id": decision.id,
+                                "status": "accepted",
+                                "verdict": decision.verdict.value,
+                            }
+                        }))
+                else:
+                    logger.warning(f"Received decision for untracked action_id {action_id}")
+                    await ws.send_str(json.dumps({
+                        "type": "error",
+                        "payload": {
+                            "action_id": action_id,
+                            "code": "UNKNOWN_ACTION",
+                            "message": "No pending action found matching action_id",
+                        }
+                    }))
 
+            # 3. Heartbeat / Liveness
             elif msg_type == "heartbeat":
-                await self.broadcast_to_phone("heartbeat_ack", {"ts": int(time.time())})
+                phone.last_heartbeat = time.time()
+                echo_nonce = payload.get("nonce", "")
+                ack_nonce = self.signer.generate_nonce()
+                now_ts = int(time.time())
+                ack_dict = {
+                    "echo_nonce": echo_nonce,
+                    "nonce": ack_nonce,
+                    "ts": now_ts,
+                }
+                ack_sig = self.signer.sign(
+                    json.dumps(ack_dict, sort_keys=True, separators=(",", ":")).encode("utf-8")
+                )
+                ack_dict["sig"] = ack_sig
+                await ws.send_str(json.dumps({
+                    "type": "heartbeat_ack",
+                    "payload": ack_dict,
+                }))
 
         except Exception as e:
             logger.error(f"Error handling phone message: {e}")
 
     async def broadcast_to_phone(self, msg_type: str, payload: dict) -> bool:
-        if not self.connected_clients:
+        targets = self.authenticated_clients if self.authenticated_clients else self.connected_clients
+        if not targets:
             return False
 
         message_str = json.dumps({"type": msg_type, "payload": payload})
         dead_clients = set()
 
-        for ws in self.connected_clients:
+        for ws in list(targets):
             try:
                 await ws.send_str(message_str)
             except Exception:
@@ -332,8 +508,38 @@ class LeashDaemonServer:
 
         for dw in dead_clients:
             self.connected_clients.discard(dw)
+            self.authenticated_clients.discard(dw)
+            self.clients.pop(dw, None)
 
-        return len(self.connected_clients) > 0
+        return len(self.authenticated_clients) > 0 or len(self.connected_clients) > 0
+
+    async def emit_provenance_event(self, event: ProvenanceEvent) -> bool:
+        """Signs and broadcasts ProvenanceEvent to Phone Guard, taints session, logs audit."""
+        if not event.nonce:
+            event.nonce = self.signer.generate_nonce()
+        if not event.sig:
+            event.sig = self.signer.sign(event.payload_for_signature())
+
+        # Record in session manager (taints session state)
+        self.session_mgr.record_provenance_event(event)
+
+        # Record in audit log
+        self.audit_logger.record_event(
+            event_type="provenance_event",
+            session_id=event.session,
+            action_id=event.id,
+            kind=event.kind.value,
+            verdict="taint",
+            risk_severity="high",
+            decided_by="provenance_gate",
+            target_path=event.source,
+            tainted=True,
+            metadata={"flags": event.flags, "snippet": event.snippet, "line": event.line},
+        )
+
+        # Broadcast event to connected Android Guard
+        return await self.broadcast_to_phone("provenance_event", event.to_dict())
+
 
     # -------------------------------------------------------------------------
     # Interception Core

@@ -261,18 +261,20 @@ class ProvenanceEvent:
     line: Optional[int] = None
     flags: List[str] = field(default_factory=list)
     snippet: Optional[str] = None
+    nonce: str = ""
     sig: str = ""
 
     def payload_for_signature(self) -> bytes:
         clean_dict = {
-            "id": self.id,
-            "session": self.session,
-            "ts": self.ts,
-            "kind": self.kind.value if isinstance(self.kind, ProvenanceKind) else self.kind,
-            "source": self.source,
-            "line": self.line,
             "flags": self.flags,
+            "id": self.id,
+            "kind": self.kind.value if isinstance(self.kind, ProvenanceKind) else self.kind,
+            "line": self.line,
+            "nonce": self.nonce,
+            "session": self.session,
             "snippet": self.snippet,
+            "source": self.source,
+            "ts": self.ts,
         }
         return json.dumps(clean_dict, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
@@ -292,8 +294,10 @@ class ProvenanceEvent:
             line=data.get("line"),
             flags=data.get("flags", []),
             snippet=data.get("snippet"),
+            nonce=data.get("nonce", ""),
             sig=data.get("sig", ""),
         )
+
 
 
 @dataclass

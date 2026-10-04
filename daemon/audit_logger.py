@@ -63,6 +63,36 @@ class AuditLogger:
         self.log(event)
         return event
 
+    def record_event(
+        self,
+        event_type: str,
+        session_id: str,
+        action_id: str,
+        kind: str,
+        verdict: str,
+        risk_severity: str,
+        decided_by: str,
+        target_path: Optional[str] = None,
+        tainted: bool = False,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> AuditEvent:
+        event = AuditEvent(
+            event_id=f"evt_{int(time.time()*1000)}",
+            session_id=session_id,
+            ts=int(time.time()),
+            event_type=event_type,
+            action_id=action_id,
+            kind=kind,
+            target_path=target_path,
+            risk_severity=risk_severity,
+            verdict=verdict,
+            decided_by=decided_by,
+            tainted=tainted,
+            metadata=metadata or {},
+        )
+        self.log(event)
+        return event
+
     def read_session_events(self, session_id: str) -> List[Dict[str, Any]]:
         if not self.log_path.exists():
             return []

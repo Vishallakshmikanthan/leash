@@ -3,12 +3,18 @@ contracts/crypto.py - Cryptographic signatures and validation for Leash protocol
 """
 from __future__ import annotations
 
-import hmac
 import hashlib
+import hmac
+import json
 import os
-import time
 import secrets
-from typing import Set
+import time
+from typing import Any, Dict, Optional, Set
+
+
+def canonical_json(data: Dict[str, Any]) -> bytes:
+    """Deterministic canonical representation for signing (sorted keys, compact separators)."""
+    return json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
 class LeashSigner:
@@ -17,7 +23,11 @@ class LeashSigner:
     def __init__(self, shared_secret: str, max_drift_seconds: int = 60):
         self.secret_bytes = shared_secret.encode("utf-8")
         self.max_drift_seconds = max_drift_seconds
-        self._seen_nonces: Set[str] = set()
+        self._seen_nonces: Dict[str, float] = {}
+
+    @property
+    def seen_nonces_count(self) -> int:
+        return len(self._seen_nonces)
 
     @staticmethod
     def generate_nonce(length: int = 16) -> str:
@@ -26,11 +36,19 @@ class LeashSigner:
     def sign(self, payload: bytes) -> str:
         return hmac.new(self.secret_bytes, payload, hashlib.sha256).hexdigest()
 
+    def sign_dict(self, data: Dict[str, Any]) -> str:
+        clean = {k: v for k, v in data.items() if k != "sig"}
+        return self.sign(canonical_json(clean))
+
     def verify(self, payload: bytes, signature: str, ts: int, nonce: str) -> bool:
+        current_time = time.time()
         # 1. Freshness check
-        current_time = int(time.time())
         if abs(current_time - ts) > self.max_drift_seconds:
             return False
+
+        # Prune nonces older than drift window
+        cutoff = current_time - self.max_drift_seconds
+        self._seen_nonces = {n: t for n, t in self._seen_nonces.items() if t > cutoff}
 
         # 2. Replay check
         if nonce in self._seen_nonces:
@@ -41,8 +59,14 @@ class LeashSigner:
         if not hmac.compare_digest(expected, signature):
             return False
 
-        self._seen_nonces.add(nonce)
-        # Cap set size to prevent memory leak
-        if len(self._seen_nonces) > 10000:
-            self._seen_nonces.clear()
+        self._seen_nonces[nonce] = float(ts)
         return True
+
+    def verify_dict(self, data: Dict[str, Any]) -> bool:
+        sig = data.get("sig", "")
+        ts = data.get("ts")
+        nonce = data.get("nonce", "")
+        if not sig or ts is None or not nonce:
+            return False
+        clean = {k: v for k, v in data.items() if k != "sig"}
+        return self.verify(canonical_json(clean), sig, int(ts), nonce)

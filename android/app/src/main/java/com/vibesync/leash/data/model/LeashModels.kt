@@ -37,6 +37,22 @@ enum class DecidedBy {
 }
 
 @Serializable
+enum class ProvenanceKind {
+    @SerialName("untrusted_read") UNTRUSTED_READ,
+    @SerialName("hidden_text_detected") HIDDEN_TEXT_DETECTED,
+    @SerialName("canary_read") CANARY_READ,
+    @SerialName("prompt_injection_suspected") PROMPT_INJECTION_SUSPECTED
+}
+
+enum class ConnectionState {
+    DISCONNECTED,
+    CONNECTING,
+    AUTHENTICATING,
+    CONNECTED,
+    RECONNECTING
+}
+
+@Serializable
 data class TaintContext(
     val tainted: Boolean = false,
     val source: String? = null,
@@ -93,4 +109,63 @@ data class RiskAssessment(
 data class ActionBundle(
     val request: ActionRequest,
     val assessment: RiskAssessment
+)
+
+@Serializable
+data class ProvenanceEvent(
+    val id: String,
+    val session: String,
+    val ts: Long,
+    val kind: ProvenanceKind,
+    val source: String,
+    val line: Int? = null,
+    val flags: List<String> = emptyList(),
+    val snippet: String? = null,
+    val nonce: String = "",
+    val sig: String = ""
+)
+
+@Serializable
+data class AuthPayload(
+    val device_id: String,
+    val device_name: String,
+    val ts: Long,
+    val nonce: String,
+    val sig: String = ""
+)
+
+@Serializable
+data class AuthAckPayload(
+    val status: String,
+    val server_version: String = "1.0",
+    val session_id: String = "",
+    val ts: Long = 0,
+    val nonce: String = "",
+    val sig: String = ""
+)
+
+@Serializable
+data class DecisionAckPayload(
+    val action_id: String,
+    val decision_id: String = "",
+    val status: String,
+    val verdict: String = ""
+)
+
+@Serializable
+data class HeartbeatPayload(
+    val ts: Long,
+    val nonce: String = "",
+    val echo_nonce: String = "",
+    val sig: String = ""
+)
+
+@Serializable
+data class PairingBundle(
+    val host: String,
+    val port: Int,
+    val shared_secret: String,
+    val protocol_version: String = "1.0",
+    val qr_uri: String = "",
+    val device_id: String? = null
 )
