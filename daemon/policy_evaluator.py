@@ -69,6 +69,9 @@ class PolicyEvaluator:
             WorkflowWatchlistGate(),
             ProvenanceTrackerGate(),
         ]
+        self.package_gate: Optional[PackageGate] = next(
+            (g for g in self.gates if isinstance(g, PackageGate)), None
+        )
 
     def register_rule(self, rule: BaseRule) -> None:
         """Dynamically registers an additional policy rule."""
@@ -77,6 +80,8 @@ class PolicyEvaluator:
     def register_gate(self, gate: BaseGate) -> None:
         """Dynamically registers an additional security gate."""
         self.gates.append(gate)
+        if isinstance(gate, PackageGate):
+            self.package_gate = gate
 
     def is_quick_allow(self, request: ActionRequest) -> bool:
         """Quickly checks whether an ActionRequest can be safely executed without phone notification."""
@@ -142,6 +147,7 @@ class PolicyEvaluator:
                         summary=gate_res.summary,
                         why=gate_res.why,
                         safer_alternative=gate_res.safer_alternative,
+                        details=gate_res.details or {},
                     )
                 )
 

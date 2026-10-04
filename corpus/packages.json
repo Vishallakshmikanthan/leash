@@ -7,19 +7,121 @@
     "pandas",
     "pytest",
     "scipy",
+    "aiohttp",
+    "fastapi",
+    "pydantic",
+    "urllib3",
+    "cryptography",
+    "torch",
+    "boto3",
     "react",
     "express",
     "lodash",
     "axios",
     "typescript",
     "chalk",
-    "webpack"
+    "webpack",
+    "colors",
+    "moment",
+    "commander",
+    "debug",
+    "vue",
+    "next",
+    "cors",
+    "dotenv",
+    "tokio",
+    "serde",
+    "syn",
+    "anyhow",
+    "clap",
+    "tracing",
+    "rand",
+    "gin",
+    "mux",
+    "logrus",
+    "testify"
   ],
+  "ecosystems": {
+    "pypi": [
+      "requests", "flask", "django", "numpy", "pandas", "pytest", "scipy",
+      "aiohttp", "fastapi", "pydantic", "urllib3", "cryptography", "torch",
+      "boto3", "jinja2", "celery", "sqlalchemy", "matplotlib", "transformers", "httpx"
+    ],
+    "npm": [
+      "react", "express", "lodash", "axios", "typescript", "chalk", "webpack",
+      "colors", "moment", "commander", "debug", "vue", "next", "cors",
+      "dotenv", "jest", "mocha", "eslint", "prettier", "body-parser"
+    ],
+    "cargo": [
+      "tokio", "serde", "syn", "anyhow", "clap", "tracing", "rand", "reqwest", "thiserror", "futures"
+    ],
+    "go": [
+      "gin", "mux", "logrus", "testify", "cobra", "viper"
+    ]
+  },
   "typosquats": [
-    {"input": "requsts", "target": "requests", "threat": "infostealer"},
-    {"input": "falsk", "target": "flask", "threat": "reverse_shell"},
-    {"input": "djagno", "target": "django", "threat": "credential_logger"},
-    {"input": "lodsh", "target": "lodash", "threat": "data_exfil"},
-    {"input": "exppress", "target": "express", "threat": "backdoor"}
-  ]
+    {"input": "requsts", "target": "requests", "threat": "infostealer", "ecosystem": "pypi"},
+    {"input": "reqeusts", "target": "requests", "threat": "credential_theft", "ecosystem": "pypi"},
+    {"input": "falsk", "target": "flask", "threat": "reverse_shell", "ecosystem": "pypi"},
+    {"input": "djagno", "target": "django", "threat": "credential_logger", "ecosystem": "pypi"},
+    {"input": "lodsh", "target": "lodash", "threat": "data_exfil", "ecosystem": "npm"},
+    {"input": "exppress", "target": "express", "threat": "backdoor", "ecosystem": "npm"},
+    {"input": "colors-pro", "target": "colors", "threat": "preinstall_infostealer", "ecosystem": "npm"},
+    {"input": "cross-env-dev", "target": "cross-env", "threat": "env_data_exfil", "ecosystem": "npm"},
+    {"input": "python-dotenvs", "target": "python-dotenv", "threat": "env_credential_harvester", "ecosystem": "pypi"},
+    {"input": "setup-tools", "target": "setuptools", "threat": "build_script_malware", "ecosystem": "pypi"},
+    {"input": "urllib", "target": "urllib3", "threat": "network_hijack", "ecosystem": "pypi"}
+  ],
+  "packages_with_install_scripts": [
+    {"name": "colors-pro", "script_types": ["preinstall", "install"], "threat": "infostealer_payload"},
+    {"name": "evil-pkg", "script_types": ["postinstall"], "threat": "reverse_shell"},
+    {"name": "node-sass", "script_types": ["install"], "threat": "native_build"},
+    {"name": "sqlite3", "script_types": ["install"], "threat": "native_compilation"},
+    {"name": "puppeteer", "script_types": ["postinstall"], "threat": "binary_fetch"}
+  ],
+  "known_packages": {
+    "requests": {
+      "ecosystem": "pypi",
+      "versions": ["2.31.0", "2.32.0", "2.32.3"],
+      "has_install_script": false
+    },
+    "flask": {
+      "ecosystem": "pypi",
+      "versions": ["3.0.0", "3.0.3"],
+      "has_install_script": false
+    },
+    "express": {
+      "ecosystem": "npm",
+      "versions": ["4.18.2", "4.19.2", "4.21.0"],
+      "has_install_script": false
+    },
+    "lodash": {
+      "ecosystem": "npm",
+      "versions": ["4.17.21"],
+      "has_install_script": false
+    },
+    "pytest": {
+      "ecosystem": "pypi",
+      "versions": ["8.3.3", "8.3.4"],
+      "has_install_script": false
+    },
+    "tokio": {
+      "ecosystem": "cargo",
+      "versions": ["1.38.0", "1.40.0"],
+      "has_install_script": false
+    },
+    "react": {
+      "ecosystem": "npm",
+      "versions": ["18.2.0", "18.3.1", "19.0.0"],
+      "has_install_script": false
+    }
+  },
+  "suspicious_version_patterns": [
+    "^0\\.0\\.0$",
+    "^0\\.0\\.1$",
+    "^0\\.0\\.2$",
+    "^.*-alpha\\.0$",
+    "^.*-dev$"
+  ],
+  "new_version_window_days": 3
 }

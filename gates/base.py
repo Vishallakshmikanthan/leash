@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from contracts.models import ActionRequest, Severity
 
@@ -19,6 +19,8 @@ class GateResult:
     summary: str
     why: str
     safer_alternative: str
+    reasons: Optional[List[str]] = None
+    details: Optional[Dict[str, Any]] = None
 
 
 class BaseGate(ABC):

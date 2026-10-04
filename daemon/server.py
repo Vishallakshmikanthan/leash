@@ -124,6 +124,8 @@ class LeashDaemonServer:
         self.app.router.add_post("/decision", self._handle_post_decision)
         self.app.router.add_post("/provenance", self._handle_post_provenance)
         self.app.router.add_get("/sessions/{session_id}/provenance", self._handle_get_session_provenance)
+        self.app.router.add_post("/api/package-gate/allow-once", self._handle_post_package_allow_once)
+        self.app.router.add_get("/api/package-gate/status", self._handle_get_package_gate_status)
 
 
         # Ensure at least one session exists
@@ -518,11 +520,87 @@ class LeashDaemonServer:
             note=data.get("note", "Decision received via dev approval channel."),
         )
 
+        if verdict == Verdict.ALLOW and (
+            data.get("allow_once")
+            or "allow-once" in (decision.note or "").lower()
+            or "allow_once" in (decision.note or "").lower()
+        ):
+            self._register_allow_once_from_decision(action_id, decision)
+
         fut = self.pending_decisions[action_id]
         if not fut.done():
             fut.set_result(decision)
 
         return web.json_response({"status": "ok", "action_id": action_id, "verdict": verdict.value})
+
+    def _register_allow_once_from_decision(
+        self, action_id: str, decision: Decision, request: Optional[ActionRequest] = None
+    ) -> None:
+        """Registers a safe allow-once authorization from an approval decision."""
+        if not self.evaluator.package_gate:
+            return
+        req = request
+        if not req:
+            meta = self.pending_metadata.get(action_id, {})
+            req = meta.get("request")
+        if not req:
+            return
+        from gates.package_gate import PackageActionParser
+        parsed = PackageActionParser.parse_action(req)
+        for pkg in parsed.packages:
+            self.evaluator.package_gate.allow_once(
+                package_name=pkg.name,
+                version=pkg.version,
+                session_id=decision.session,
+                decider=decision.by.value,
+                note=decision.note or "Allow-once granted via approval flow",
+            )
+
+    async def _handle_post_package_allow_once(self, request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+        pkg = body.get("package") or body.get("package_name")
+        if not pkg:
+            return web.json_response({"error": "Field 'package' is required"}, status=400)
+
+        version = body.get("version")
+        session_id = body.get("session_id") or self.default_session_id
+        decider = body.get("decided_by", "biometric")
+        note = body.get("note", "Allow-once granted via API")
+
+        if self.evaluator.package_gate:
+            grant = self.evaluator.package_gate.allow_once(
+                package_name=pkg,
+                version=version,
+                session_id=session_id,
+                decider=decider,
+                note=note,
+            )
+            return web.json_response({
+                "status": "ok",
+                "grant_id": grant.grant_id,
+                "package": grant.package_name,
+                "version": grant.version,
+                "session_id": grant.session_id,
+                "decided_by": grant.decided_by,
+            })
+        return web.json_response({"error": "PackageGate not active"}, status=503)
+
+    async def _handle_get_package_gate_status(self, request: web.Request) -> web.Response:
+        if not self.evaluator.package_gate:
+            return web.json_response({"active": False})
+
+        gate = self.evaluator.package_gate
+        return web.json_response({
+            "active": True,
+            "offline_mode": gate.offline_mode,
+            "popular_packages_count": len(gate.knowledge.popular_packages),
+            "known_packages_count": len(gate.knowledge.known_packages),
+            "allow_once_grants": gate.allow_once_mgr.list_grants(),
+        })
 
     # -------------------------------------------------------------------------
     # WebSocket Message Processing
@@ -628,6 +706,12 @@ class LeashDaemonServer:
                 if action_id in self.pending_decisions:
                     fut = self.pending_decisions[action_id]
                     if not fut.done():
+                        if decision.verdict == Verdict.ALLOW and (
+                            payload.get("allow_once")
+                            or "allow-once" in (decision.note or "").lower()
+                            or "allow_once" in (decision.note or "").lower()
+                        ):
+                            self._register_allow_once_from_decision(action_id, decision)
                         fut.set_result(decision)
                         # Send reliable confirmation ack back to phone
                         await ws.send_str(json.dumps({
@@ -647,6 +731,29 @@ class LeashDaemonServer:
                             "action_id": action_id,
                             "code": "UNKNOWN_ACTION",
                             "message": "No pending action found matching action_id",
+                        }
+                    }))
+
+            # 2b. Package Allow-Once Direct Message
+            elif msg_type == "package_allow_once":
+                pkg = payload.get("package") or payload.get("package_name")
+                ver = payload.get("version")
+                sess = payload.get("session_id") or self.default_session_id
+                if pkg and self.evaluator.package_gate:
+                    grant = self.evaluator.package_gate.allow_once(
+                        package_name=pkg,
+                        version=ver,
+                        session_id=sess,
+                        decider="biometric",
+                        note=payload.get("note", "Allow-once granted via phone Guard"),
+                    )
+                    await ws.send_str(json.dumps({
+                        "type": "package_allow_once_ack",
+                        "payload": {
+                            "grant_id": grant.grant_id,
+                            "package": grant.package_name,
+                            "session_id": grant.session_id,
+                            "status": "authorized",
                         }
                     }))
 
@@ -1100,6 +1207,35 @@ class LeashDaemonServer:
             metadata={"note": decision.note},
         )
         await self.broadcast_to_phone("audit_event", evt.to_dict())
+
+        # If decision was allow-once, register grant
+        if decision.verdict == Verdict.ALLOW and (
+            "allow-once" in (decision.note or "").lower() or "allow_once" in (decision.note or "").lower()
+        ):
+            self._register_allow_once_from_decision(request.id, decision, request=request)
+
+        # Record Package Gate audit event if package action
+        if assessment.category == "package-install" or any("R-PKG-" in r for r in assessment.rule_ids):
+            from gates.package_gate import PackageActionParser
+            parsed = PackageActionParser.parse_action(request)
+            pkg_name = parsed.packages[0].name if parsed.packages else (request.command or "package")
+            version = parsed.packages[0].version if parsed.packages else None
+            self.audit_logger.record_package_gate_event(
+                session_id=request.session,
+                action_id=request.id,
+                package_name=pkg_name,
+                version=version,
+                verdict=decision.verdict.value,
+                risk_severity=assessment.severity.value,
+                decided_by=decision.by.value,
+                reasons=assessment.rule_ids,
+                warnings=[assessment.summary],
+                allow_once=("allow-once" in (decision.note or "").lower() or "allow_once" in (decision.note or "").lower()),
+                command=request.command,
+                agent=request.agent,
+                worktree=request.worktree,
+                metadata={"note": decision.note},
+            )
 
         return decision
 

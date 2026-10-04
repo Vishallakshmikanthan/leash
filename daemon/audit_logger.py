@@ -238,6 +238,58 @@ class AuditLogger:
         self.log(event)
         return event
 
+    def record_package_gate_event(
+        self,
+        session_id: str,
+        action_id: str,
+        package_name: str,
+        verdict: str,
+        risk_severity: str,
+        decided_by: str = "package_gate",
+        version: Optional[str] = None,
+        reasons: Optional[List[str]] = None,
+        warnings: Optional[List[str]] = None,
+        allow_once: bool = False,
+        lockfile_verified: bool = False,
+        offline_mode: bool = True,
+        command: Optional[str] = None,
+        agent: Optional[str] = None,
+        worktree: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> AuditEvent:
+        """Records a package gate supply chain evaluation event."""
+        meta = {
+            "package_name": package_name,
+            "version": version,
+            "reasons": reasons or [],
+            "warnings": warnings or [],
+            "allow_once": allow_once,
+            "lockfile_verified": lockfile_verified,
+            "offline_mode": offline_mode,
+        }
+        if metadata:
+            meta.update(metadata)
+
+        event = AuditEvent(
+            event_id=f"evt_pkg_{int(time.time()*1000)}",
+            session_id=session_id,
+            ts=int(time.time()),
+            event_type="package_gate_evaluation",
+            action_id=action_id,
+            kind="package_install",
+            command=sanitize_text(command or f"install {package_name}", max_len=500),
+            target_path=package_name,
+            risk_severity=risk_severity,
+            risk_category="package-install",
+            verdict=verdict,
+            decided_by=decided_by,
+            agent=agent or "unknown",
+            worktree=worktree,
+            metadata=meta,
+        )
+        self.log(event)
+        return event
+
 
     def read_session_events(self, session_id: str) -> List[Dict[str, Any]]:
         """Reads raw audit events recorded for a given session."""

@@ -10,7 +10,12 @@ from gates.secret_fence import (
     calculate_shannon_entropy,
     find_high_entropy_strings,
 )
-from gates.package_gate import PackageGate
+from gates.package_gate import (
+    AllowOnceManager,
+    LockfileInspector,
+    PackageGate,
+    PackageKnowledge,
+)
 from gates.hidden_text import HiddenTextGate
 from gates.workflow_watchlist import WorkflowWatchlistGate
 from gates.provenance_tracker import ProvenanceTracker, ProvenanceTrackerGate
@@ -25,6 +30,9 @@ __all__ = [
     "calculate_shannon_entropy",
     "find_high_entropy_strings",
     "PackageGate",
+    "PackageKnowledge",
+    "LockfileInspector",
+    "AllowOnceManager",
     "HiddenTextGate",
     "WorkflowWatchlistGate",
     "ProvenanceTracker",
