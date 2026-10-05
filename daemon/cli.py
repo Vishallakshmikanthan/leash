@@ -197,18 +197,31 @@ async def run_server(config: DaemonConfig) -> None:
         await server.stop()
 
 
-async def run_agent_session(agent_cmd: list[str], config: DaemonConfig) -> int:
+async def run_agent_session(agent_cmd: list[str], config: DaemonConfig, contain: bool = False) -> int:
+    from contracts.models import ProtectionLevel
+    from daemon.container import ContainerRuntime
+    from shim.shims import install_shims
+
     session_mgr = SessionManager(Path("."))
     session = session_mgr.create_session()
     audit_logger = AuditLogger(config.audit_log_path)
+
+    # Determine protection level
+    protection_level = ProtectionLevel.L2_CONTAINED.value if contain else ProtectionLevel.L1_COOPERATIVE.value
+    session.protection_level = protection_level
 
     server = LeashDaemonServer(config, session_mgr, audit_logger)
     server.default_session_id = session.session_id
     await server.start()
 
+    # Install PATH shims
+    shims_dir = install_shims()
+
     print(f"[+] Leash Session Started: {session.session_id}")
-    print(f"[+] Worktree: {session.worktree_path}")
-    print(f"[+] Daemon listening on port {config.port}")
+    print(f"[+] Protection Level:     {protection_level}")
+    print(f"[+] Worktree:             {session.worktree_path}")
+    print(f"[+] Daemon listening on:  port {config.port}")
+    print(f"[+] Agent Plane on:       port {config.agent_plane_port}")
 
     token = session_mgr.get_session_token(session.session_id) or ""
     # Safe environment: pass LEASH_SESSION_TOKEN and agent URL, NEVER LEASH_SHARED_SECRET
@@ -217,6 +230,9 @@ async def run_agent_session(agent_cmd: list[str], config: DaemonConfig) -> int:
         if safe_var in os.environ:
             env[safe_var] = os.environ[safe_var]
 
+    # Prepend shims to PATH and set SHELL
+    env["PATH"] = f"{shims_dir}{os.pathsep}{env.get('PATH', '')}"
+    env["SHELL"] = str(shims_dir / ("bash.cmd" if sys.platform == "win32" else "bash"))
     env["LEASH_SESSION_ID"] = session.session_id
     env["LEASH_SESSION_TOKEN"] = token
     env["LEASH_AGENT_URL"] = f"http://127.0.0.1:{config.agent_plane_port}"
@@ -226,13 +242,32 @@ async def run_agent_session(agent_cmd: list[str], config: DaemonConfig) -> int:
     if agent_cmd and agent_cmd[0] == "--":
         agent_cmd = agent_cmd[1:]
 
-    print(f"[+] Launching agent: {' '.join(agent_cmd)}\n")
-    proc = await asyncio.create_subprocess_exec(
-        agent_cmd[0],
-        *agent_cmd[1:],
-        env=env,
-        cwd=session.worktree_path if Path(session.worktree_path).exists() else ".",
-    )
+    worktree_target = session.worktree_path if Path(session.worktree_path).exists() else "."
+
+    if contain:
+        container_rt = ContainerRuntime()
+        final_cmd = container_rt.build_contained_command(
+            agent_cmd=agent_cmd,
+            worktree_path=worktree_target,
+            session_token=token,
+            agent_url=f"http://127.0.0.1:{config.agent_plane_port}",
+            enable_network=False,
+        )
+        print(f"[+] Launching contained agent: {' '.join(final_cmd)}\n")
+        proc = await asyncio.create_subprocess_exec(
+            final_cmd[0],
+            *final_cmd[1:],
+            env=env,
+            cwd=worktree_target,
+        )
+    else:
+        print(f"[+] Launching agent: {' '.join(agent_cmd)}\n")
+        proc = await asyncio.create_subprocess_exec(
+            agent_cmd[0],
+            *agent_cmd[1:],
+            env=env,
+            cwd=worktree_target,
+        )
 
     exit_code = await proc.wait()
     print(f"\n[+] Agent exited with status: {exit_code}")
@@ -386,9 +421,32 @@ def cmd_session(args: argparse.Namespace) -> None:
         print(f"[+] Session {session_id} terminated: {bool(s)}")
 
 
-def cmd_demo(args: argparse.Namespace) -> None:
-    from demo.run_demo import run_demo_suite
-    run_demo_suite()
+def cmd_hook(args: argparse.Namespace) -> None:
+    fmt = getattr(args, "format", "claude")
+    raw_input = sys.stdin.read()
+
+    if fmt == "claude":
+        from shim.adapters.claude_code import ClaudeCodeAdapter
+        adapter = ClaudeCodeAdapter()
+    else:
+        from shim.adapters.generic import GenericJsonAdapter
+        adapter = GenericJsonAdapter()
+
+    exit_code = adapter.handle(raw_input)
+    sys.exit(exit_code)
+
+
+def cmd_mcp_proxy(args: argparse.Namespace) -> None:
+    server_cmd = args.server_cmd
+    if not server_cmd:
+        sys.stderr.write("Specify server command after '--'\n")
+        sys.exit(1)
+    if server_cmd[0] == "--":
+        server_cmd = server_cmd[1:]
+    from shim.mcp_proxy import McpProxy
+    proxy = McpProxy(server_cmd)
+    exit_code = asyncio.run(proxy.run())
+    sys.exit(exit_code)
 
 
 def main() -> None:
@@ -445,12 +503,22 @@ def main() -> None:
     # leash demo
     subparsers.add_parser("demo", help="Run the automated 4-scene Leash demo runner")
 
-    # leash run [--task ...] [--scope-paths ...] -- <command>
+    # leash hook [--format claude|json]
+    hook_parser = subparsers.add_parser("hook", help="Pre-tool execution hook adapter for coding agents")
+    hook_parser.add_argument("--format", choices=["claude", "json"], default="claude", help="Agent hook payload format")
+    hook_parser.add_argument("--agent", default="claude-code", help="Name of agent")
+
+    # leash mcp-proxy -- <server_command>
+    mcp_parser = subparsers.add_parser("mcp-proxy", help="Intercept Model Context Protocol tool calls")
+    mcp_parser.add_argument("server_cmd", nargs=argparse.REMAINDER, help="MCP server executable and arguments")
+
+    # leash run [--task ...] [--scope-paths ...] [--contain] -- <command>
     run_parser = subparsers.add_parser("run", help="Run agent in an isolated Leash session with task scope")
     run_parser.add_argument("--task", default=None, help="Task description for intent drift tracking (F2)")
     run_parser.add_argument("--scope-paths", nargs="*", default=None, help="Allowed path boundaries")
     run_parser.add_argument("--scope-cmds", nargs="*", default=None, help="Allowed command executables")
     run_parser.add_argument("--scope-hosts", nargs="*", default=None, help="Allowed network hosts")
+    run_parser.add_argument("--contain", action="store_true", default=False, help="Run with L2 Contained isolation (Docker/Podman/bwrap)")
     run_parser.add_argument("agent_cmd", nargs=argparse.REMAINDER, help="Agent command to execute")
 
     args = parser.parse_args()
@@ -478,12 +546,16 @@ def main() -> None:
         cmd_office_kit(args)
     elif args.command == "demo":
         cmd_demo(args)
+    elif args.command == "hook":
+        cmd_hook(args)
+    elif args.command == "mcp-proxy":
+        cmd_mcp_proxy(args)
     elif args.command == "run":
         if not args.agent_cmd:
             print("Error: Specify agent command after '--'. Example: leash run -- python agent.py")
             sys.exit(1)
         config = DaemonConfig.load_default()
-        exit_code = asyncio.run(run_agent_session(args.agent_cmd, config))
+        exit_code = asyncio.run(run_agent_session(args.agent_cmd, config, contain=args.contain))
         sys.exit(exit_code)
     else:
         parser.print_help()

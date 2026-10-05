@@ -45,6 +45,12 @@ class ProvenanceKind(str, Enum):
     PROMPT_INJECTION_SUSPECTED = "prompt_injection_suspected"
 
 
+class ProtectionLevel(str, Enum):
+    L1_COOPERATIVE = "L1 Cooperative"
+    L2_CONTAINED = "L2 Contained"
+    L3_ISOLATED = "L3 Isolated"
+
+
 class SessionState(str, Enum):
     INITIALIZING = "initializing"
     ACTIVE = "active"
@@ -89,6 +95,7 @@ class ActionRequest:
     taint: TaintContext = field(default_factory=TaintContext)
     scope_flags: List[str] = field(default_factory=list)
     sig: str = ""
+    protection_level: str = ProtectionLevel.L1_COOPERATIVE.value
 
     def payload_for_signature(self) -> bytes:
         """Deterministic canonical representation for signing."""
@@ -345,6 +352,7 @@ class SessionScope:
     receipt_markdown: Optional[str] = None
     time_limit_seconds: Optional[int] = None
     token_hash: Optional[str] = None
+    protection_level: str = ProtectionLevel.L1_COOPERATIVE.value
 
     def to_dict(self) -> Dict[str, Any]:
         res = asdict(self)

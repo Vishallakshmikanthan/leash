@@ -8,7 +8,9 @@ import inspect
 import json
 import logging
 import random
+import shutil
 import socket
+import sys
 import time
 import uuid
 
@@ -2790,6 +2792,21 @@ class LeashDaemonServer:
 
         return decision
 
+    @staticmethod
+    def _get_os_shell_exec(command: str) -> List[str]:
+        """Returns explicit shell binary and arguments per OS for safe execution without bare shell invocation."""
+        if sys.platform == "win32":
+            powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+            if powershell:
+                return [powershell, "-NoProfile", "-NonInteractive", "-Command", command]
+            cmd_exe = os.environ.get("COMSPEC", "cmd.exe")
+            return [cmd_exe, "/c", command]
+        else:
+            bash = shutil.which("bash") or "/bin/bash"
+            if not os.path.exists(bash):
+                bash = "/bin/sh"
+            return [bash, "-c", command]
+
     async def execute_action(self, request: ActionRequest) -> CommandResult:
         """Evaluates action, enforces policy, and executes command if allowed."""
         start_time = time.time()
@@ -2817,8 +2834,10 @@ class LeashDaemonServer:
             )
         elif request.kind == ActionKind.SHELL and request.command:
             try:
-                proc = await asyncio.create_subprocess_shell(
-                    request.command,
+                shell_cmd = self._get_os_shell_exec(request.command)
+                proc = await asyncio.create_subprocess_exec(
+                    shell_cmd[0],
+                    *shell_cmd[1:],
                     cwd=request.cwd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
