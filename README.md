@@ -17,7 +17,7 @@
 
 <br/>
 
-<img src="./docs/screenshots/desktop-security-portal.png" alt="Leash Desktop Security Portal" width="850" style="border-radius: 12px; box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4); border: 1px solid rgba(255, 255, 255, 0.1);" />
+
 
 <br/>
 <br/>
