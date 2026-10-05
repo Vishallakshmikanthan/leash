@@ -16,10 +16,6 @@
 > **"Your AI coding agent can write code at lightspeed. Leash ensures it doesn't accidentally or maliciously destroy your system while doing it."**
 
 <br/>
-
-
-
-<br/>
 <br/>
 
 [🏆 iQOO Hackathon](#-iqoo-hackathon-2026) •
