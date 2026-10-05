@@ -56,6 +56,26 @@ object LeashCrypto {
             .replace("\t", "\\t")
     }
 
+    fun canonicalJson(map: Map<String, Any?>): ByteArray {
+        val sortedKeys = map.keys.sorted()
+        val jsonStr = buildString {
+            append('{')
+            sortedKeys.forEachIndexed { index, key ->
+                if (index > 0) append(',')
+                append('"').append(escapeJson(key)).append("\":")
+                val value = map[key]
+                when (value) {
+                    null -> append("null")
+                    is Number -> append(value.toString())
+                    is Boolean -> append(value.toString())
+                    else -> append('"').append(escapeJson(value.toString())).append('"')
+                }
+            }
+            append('}')
+        }
+        return jsonStr.toByteArray(Charsets.UTF_8)
+    }
+
     fun canonicalDecisionBytes(
         actionId: String,
         by: String,
@@ -66,19 +86,34 @@ object LeashCrypto {
         ts: Long,
         verdict: String
     ): ByteArray {
-        val jsonStr = buildString {
-            append('{')
-            append("\"action_id\":\"").append(escapeJson(actionId)).append("\",")
-            append("\"by\":\"").append(escapeJson(by)).append("\",")
-            append("\"id\":\"").append(escapeJson(id)).append("\",")
-            append("\"nonce\":\"").append(escapeJson(nonce)).append("\",")
-            append("\"note\":\"").append(escapeJson(note)).append("\",")
-            append("\"session\":\"").append(escapeJson(session)).append("\",")
-            append("\"ts\":").append(ts).append(',')
-            append("\"verdict\":\"").append(escapeJson(verdict)).append("\"")
-            append('}')
-        }
-        return jsonStr.toByteArray(Charsets.UTF_8)
+        return canonicalJson(mapOf(
+            "action_id" to actionId,
+            "by" to by,
+            "id" to id,
+            "nonce" to nonce,
+            "note" to note,
+            "session" to session,
+            "ts" to ts,
+            "verdict" to verdict
+        ))
+    }
+
+    fun canonicalSignedDecisionBytes(
+        actionDigest: String,
+        actionId: String,
+        decidedBy: String,
+        nonceServer: String,
+        ts: Long,
+        verdict: String
+    ): ByteArray {
+        return canonicalJson(mapOf(
+            "action_digest" to actionDigest,
+            "action_id" to actionId,
+            "decided_by" to decidedBy,
+            "nonce_server" to nonceServer,
+            "ts" to ts,
+            "verdict" to verdict
+        ))
     }
 
     fun canonicalAuthBytes(
@@ -87,14 +122,11 @@ object LeashCrypto {
         nonce: String,
         ts: Long
     ): ByteArray {
-        val jsonStr = buildString {
-            append('{')
-            append("\"device_id\":\"").append(escapeJson(deviceId)).append("\",")
-            append("\"device_name\":\"").append(escapeJson(deviceName)).append("\",")
-            append("\"nonce\":\"").append(escapeJson(nonce)).append("\",")
-            append("\"ts\":").append(ts)
-            append('}')
-        }
-        return jsonStr.toByteArray(Charsets.UTF_8)
+        return canonicalJson(mapOf(
+            "device_id" to deviceId,
+            "device_name" to deviceName,
+            "nonce" to nonce,
+            "ts" to ts
+        ))
     }
 }

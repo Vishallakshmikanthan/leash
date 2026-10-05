@@ -6,7 +6,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 
 @dataclass
@@ -23,6 +23,11 @@ class DaemonConfig:
     dev_mode: bool = False
     allow_unsigned_local: bool = True
     local_approval_channel: bool = True
+    use_tls: bool = False
+    enable_test_routes: bool = field(default_factory=lambda: os.environ.get("LEASH_TEST_ROUTES") == "1")
+    agent_plane_port: int = 8766
+    cert_path: Optional[Path] = None
+    key_path: Optional[Path] = None
     allow_command_patterns: List[str] = field(default_factory=lambda: [
         "pytest",
         "npm test",

@@ -12,9 +12,47 @@ import time
 from typing import Any, Dict, Optional, Set
 
 
+import base64
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+
+
 def canonical_json(data: Dict[str, Any]) -> bytes:
-    """Deterministic canonical representation for signing (sorted keys, compact separators)."""
-    return json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    """Deterministic canonical representation for signing (sorted keys, compact separators, UTF-8)."""
+    return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def compute_action_digest(
+    command: str,
+    cwd: str,
+    kind: str,
+    target_path: Optional[str],
+    session: str,
+    nonce: str,
+) -> str:
+    """Calculates SHA-256 digest of canonical action fields."""
+    payload = canonical_json({
+        "command": command,
+        "cwd": cwd,
+        "kind": kind,
+        "nonce": nonce,
+        "session": session,
+        "target_path": target_path or "",
+    })
+    return hashlib.sha256(payload).hexdigest()
+
+
+def verify_device_signature(pubkey_der: bytes, payload: bytes, signature_der: bytes) -> bool:
+    """Verifies an ECDSA P-256 / SHA-256 DER signature using SubjectPublicKeyInfo DER."""
+    try:
+        key = serialization.load_der_public_key(pubkey_der)
+        if not isinstance(key, ec.EllipticCurvePublicKey):
+            return False
+        key.verify(signature_der, payload, ec.ECDSA(hashes.SHA256()))
+        return True
+    except Exception:
+        return False
 
 
 class LeashSigner:

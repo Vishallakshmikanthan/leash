@@ -31,27 +31,25 @@ if hasattr(sys.stdout, "reconfigure"):
 
 
 def cmd_pair(args: argparse.Namespace) -> None:
-    config = DaemonConfig.load_default()
-    qr_uri = f"leash://pair?host={config.host}&port={config.port}&secret={config.shared_secret}&version=1.0"
-    pairing_info = {
-        "host": config.host,
-        "port": config.port,
-        "shared_secret": config.shared_secret,
-        "protocol_version": "1.0",
-        "qr_uri": qr_uri,
-        "created_at": int(time.time()),
-    }
-    config.pairing_code_file.parent.mkdir(parents=True, exist_ok=True)
-    with open(config.pairing_code_file, "w", encoding="utf-8") as f:
-        json.dump(pairing_info, f, indent=2)
+    from daemon.pairing import PairingManager
+    from daemon.paths import leash_home
+    from daemon.tls import create_server_ssl_context
 
-    print("=== LEASH PAIRING CREDENTIALS ===")
-    print(f"Host:       {config.host}")
-    print(f"Port:       {config.port}")
-    print(f"Secret:     {config.shared_secret}")
-    print(f"QR URI:     {qr_uri}")
-    print(f"Pairing info written to: {config.pairing_code_file}")
-    print("================================")
+    config = DaemonConfig.load_default()
+    _, fingerprint = create_server_ssl_context(config.cert_path, config.key_path)
+    pairing_mgr = PairingManager()
+    token = pairing_mgr.create_pairing_token(120)
+
+    host = "127.0.0.1" if config.host in ("0.0.0.0", "") else config.host
+    qr_uri = PairingManager.format_pairing_qr(host, config.port, fingerprint, token)
+
+    print("=== LEASH SECURE PAIRING ===")
+    print(f"Host:           {host}")
+    print(f"Port:           {config.port}")
+    print(f"Fingerprint:    {fingerprint}")
+    print(f"Pairing Token:  {token} (valid for 120s, single use)")
+    print(f"QR URI:         {qr_uri}")
+    print("============================")
 
 
 
@@ -212,12 +210,16 @@ async def run_agent_session(agent_cmd: list[str], config: DaemonConfig) -> int:
     print(f"[+] Worktree: {session.worktree_path}")
     print(f"[+] Daemon listening on port {config.port}")
 
-    # Set environment variables for the agent subprocess
-    env = os.environ.copy()
+    token = session_mgr.get_session_token(session.session_id) or ""
+    # Safe environment: pass LEASH_SESSION_TOKEN and agent URL, NEVER LEASH_SHARED_SECRET
+    env = {}
+    for safe_var in ("PATH", "HOME", "USERPROFILE", "LANG", "LC_ALL", "TERM", "SYSTEMROOT", "WINDIR", "TMP", "TEMP"):
+        if safe_var in os.environ:
+            env[safe_var] = os.environ[safe_var]
+
     env["LEASH_SESSION_ID"] = session.session_id
-    env["LEASH_DAEMON_URL"] = f"http://127.0.0.1:{config.port}"
-    env["LEASH_PORT"] = str(config.port)
-    env["LEASH_SHARED_SECRET"] = config.shared_secret
+    env["LEASH_SESSION_TOKEN"] = token
+    env["LEASH_AGENT_URL"] = f"http://127.0.0.1:{config.agent_plane_port}"
     env["LEASH_WORKTREE"] = session.worktree_path
 
     # Clean command args

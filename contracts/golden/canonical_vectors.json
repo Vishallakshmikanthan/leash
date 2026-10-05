@@ -1,0 +1,42 @@
+[
+  {
+    "id": "simple_ascii",
+    "input": {
+      "command": "git status",
+      "session": "s_123",
+      "cwd": "/repo"
+    },
+    "expected_canonical": "{\"cwd\":\"/repo\",\"command\":\"git status\",\"session\":\"s_123\"}",
+    "expected_canonical_sorted": "{\"command\":\"git status\",\"cwd\":\"/repo\",\"session\":\"s_123\"}"
+  },
+  {
+    "id": "unicode_apostrophe",
+    "input": {
+      "device_id": "dev_99",
+      "device_name": "Jaskirat’s Pixel",
+      "nonce": "abc12345",
+      "ts": 1728130000
+    },
+    "expected_canonical_sorted": "{\"device_id\":\"dev_99\",\"device_name\":\"Jaskirat’s Pixel\",\"nonce\":\"abc12345\",\"ts\":1728130000}"
+  },
+  {
+    "id": "escapes_and_newlines",
+    "input": {
+      "note": "line1\nline2\ttabbed \"quoted\" \\backslash",
+      "verdict": "allow"
+    },
+    "expected_canonical_sorted": "{\"note\":\"line1\\nline2\\ttabbed \\\"quoted\\\" \\\\backslash\",\"verdict\":\"allow\"}"
+  },
+  {
+    "id": "action_decision_payload",
+    "input": {
+      "action_digest": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "action_id": "act_456",
+      "decided_by": "phone-biometric",
+      "nonce_server": "srv_nonce_789",
+      "ts": 1728130100,
+      "verdict": "allow"
+    },
+    "expected_canonical_sorted": "{\"action_digest\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"action_id\":\"act_456\",\"decided_by\":\"phone-biometric\",\"nonce_server\":\"srv_nonce_789\",\"ts\":1728130100,\"verdict\":\"allow\"}"
+  }
+]

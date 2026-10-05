@@ -9,7 +9,14 @@ description = "A phone-based safety layer for AI coding agents"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-    "pydantic>=2.0.0",
+    "aiohttp>=3.9.0",
+    "cryptography>=41.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
 ]
 
 [project.scripts]

@@ -344,6 +344,7 @@ class SessionScope:
     changed_files: List[Dict[str, Any]] = field(default_factory=list)
     receipt_markdown: Optional[str] = None
     time_limit_seconds: Optional[int] = None
+    token_hash: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         res = asdict(self)

@@ -3,7 +3,10 @@ session/manager.py - Session lifecycle, worktree isolation, task scope contracts
 """
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
+import secrets
 import time
 import uuid
 from pathlib import Path
@@ -26,6 +29,28 @@ from session.worktree import WorktreeManager
 logger = logging.getLogger("leash.session.manager")
 
 
+def confine_cwd(path: Optional[str], root_path: str) -> str:
+    """
+    Confines cwd to root_path using realpath resolution.
+    Rejects any path escaping root_path with PermissionError.
+    """
+    real_root = os.path.realpath(root_path)
+    if not path or path == ".":
+        target = real_root
+    elif os.path.isabs(path):
+        target = os.path.realpath(path)
+    else:
+        target = os.path.realpath(os.path.join(real_root, path))
+
+    try:
+        common = os.path.commonpath([real_root, target])
+    except ValueError:
+        raise PermissionError(f"CWD path traversal outside session root: {path}")
+    if common != real_root:
+        raise PermissionError(f"CWD '{path}' resolved to '{target}' outside session root '{real_root}'")
+    return target
+
+
 class SessionManager:
     """Manages active Leash sessions, worktree isolation, provenance tracking, snapshots, and runaway protection."""
 
@@ -44,6 +69,8 @@ class SessionManager:
         self.session_changed_files: Dict[str, List[Dict[str, Any]]] = {}
         self.session_receipts: Dict[str, str] = {}
         self.active_session_id: Optional[str] = None
+        self._session_raw_tokens: Dict[str, str] = {}
+        self._token_hash_to_session: Dict[str, str] = {}
 
 
     @property
@@ -101,6 +128,12 @@ class SessionManager:
             time_limit_seconds=time_limit_seconds,
         )
 
+        raw_token = secrets.token_hex(32)
+        token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        self._session_raw_tokens[sess_id] = raw_token
+        self._token_hash_to_session[token_hash] = sess_id
+        scope.token_hash = token_hash
+
         self.sessions[sess_id] = scope
         self.session_guards[sess_id] = RunawayGuard(
             time_limit_seconds=time_limit_seconds,
@@ -113,6 +146,23 @@ class SessionManager:
 
         logger.info(f"Created session {sess_id} for agent '{agent_name}' in worktree '{worktree_path}'")
         return scope
+
+    def get_session_token(self, session_id: str) -> Optional[str]:
+        """Returns the raw capability token for the given session."""
+        return self._session_raw_tokens.get(session_id)
+
+    def get_session_by_token(self, token: str) -> Optional[SessionScope]:
+        """Looks up an active session by its capability token."""
+        if not token:
+            return None
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        sess_id = self._token_hash_to_session.get(token_hash)
+        if not sess_id:
+            return None
+        sess = self.sessions.get(sess_id)
+        if sess and sess.state == SessionState.ACTIVE:
+            return sess
+        return None
 
     def get_session(self, session_id: str) -> Optional[SessionScope]:
         """Retrieves session metadata by ID."""
@@ -296,6 +346,12 @@ class SessionManager:
         session.state = SessionState.TERMINATED
         session.terminated_at = int(time.time())
         session.termination_reason = reason
+
+        # Invalidate capability token
+        if session.token_hash and session.token_hash in self._token_hash_to_session:
+            del self._token_hash_to_session[session.token_hash]
+        if session_id in self._session_raw_tokens:
+            del self._session_raw_tokens[session_id]
 
         # Reset active session ID if this was the active one
         if self.active_session_id == session_id:

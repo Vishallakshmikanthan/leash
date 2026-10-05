@@ -17,7 +17,8 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
 
 from aiohttp import web
 
-from contracts.crypto import LeashSigner
+import base64
+from contracts.crypto import LeashSigner, canonical_json, compute_action_digest
 from contracts.models import (
     ActionKind,
     ActionRequest,
@@ -31,12 +32,15 @@ from contracts.models import (
     Verdict,
 )
 
+from daemon.agent_api import AgentApiServer
 from daemon.audit_logger import AuditLogger
 from daemon.config import DaemonConfig
 from daemon.office_kit import OfficeKitClipboard, OfficeKitTransfer
+from daemon.pairing import DeviceStore, PairingManager, verify_signed_decision_payload
 from daemon.policy_evaluator import PolicyEvaluator
 from daemon.preview_manager import ScriptPreviewManager
 from daemon.receipt_builder import ReceiptBuilder
+from daemon.tls import create_server_ssl_context
 from gates.secret_fence import CanaryManager, SecretRedactor
 from session.manager import SessionManager
 
@@ -90,6 +94,10 @@ class LeashDaemonServer:
         self._running = False
         self.active_pairing_pin: str = f"{random.randint(100000, 999999)}"
         self.pairing_pin_created_at: float = time.time()
+        self.device_store = DeviceStore()
+        self.pairing_mgr = PairingManager()
+        self.agent_api_server: Optional[AgentApiServer] = None
+        self.tls_fingerprint: Optional[str] = None
 
     def register_local_decider(
         self, decider: Optional[Callable[[ActionRequest, RiskAssessment], Awaitable[Decision]]]
@@ -114,42 +122,53 @@ class LeashDaemonServer:
         self.app.router.add_get("/ws", self._handle_ws_route)
         self.app.router.add_get("/status", self._handle_status)
         self.app.router.add_get("/health", self._handle_status)
-        self.app.router.add_get("/pairing", self._handle_pairing)
-        self.app.router.add_get("/pending", self._handle_get_pending)
-        self.app.router.add_get("/audit", self._handle_get_audit)
-        self.app.router.add_get("/sessions", self._handle_get_sessions)
-        self.app.router.add_post("/sessions", self._handle_post_sessions)
-        self.app.router.add_get("/sessions/{session_id}", self._handle_get_session_details)
-        self.app.router.add_post("/sessions/{session_id}/pause", self._handle_post_pause_session)
-        self.app.router.add_post("/sessions/{session_id}/resume", self._handle_post_resume_session)
-        self.app.router.add_post("/sessions/{session_id}/terminate", self._handle_post_terminate_session)
-        self.app.router.add_get("/sessions/{session_id}/receipt", self._handle_get_session_receipt)
-        self.app.router.add_post("/sessions/{session_id}/rewind", self._handle_post_rewind_session)
-        self.app.router.add_get("/sessions/{session_id}/snapshots", self._handle_get_session_snapshots)
-        self.app.router.add_post("/sessions/{session_id}/scope", self._handle_post_session_scope)
-        self.app.router.add_get("/sessions/{session_id}/activity", self._handle_get_session_activity)
-        self.app.router.add_post("/sessions/{session_id}/runaway/decision", self._handle_post_runaway_decision)
-        self.app.router.add_post("/session/runaway/decision", self._handle_post_runaway_decision)
-        self.app.router.add_post("/action", self._handle_post_action)
-        self.app.router.add_post("/decision", self._handle_post_decision)
-        self.app.router.add_post("/provenance", self._handle_post_provenance)
-        self.app.router.add_get("/sessions/{session_id}/provenance", self._handle_get_session_provenance)
-        self.app.router.add_post("/api/package-gate/allow-once", self._handle_post_package_allow_once)
-        self.app.router.add_get("/api/package-gate/status", self._handle_get_package_gate_status)
+
+        # M2.1 Approver Plane Pairing and Device Management
+        self.app.router.add_post("/pair", self._handle_post_pair)
+        self.app.router.add_get("/api/devices", self._handle_get_devices)
+        self.app.router.add_post("/api/devices/{device_id}/revoke", self._handle_post_revoke_device)
+
+        # Web portal & PIN refresh
+        self.app.router.add_get("/portal", self._handle_web_portal)
+        self.app.router.add_get("/pair", self._handle_web_portal)
+        self.app.router.add_get("/api/pair/pin", self._handle_get_pairing_pin)
+        self.app.router.add_post("/api/pair/pin/refresh", self._handle_post_refresh_pin)
+
+        # Tooling & preview
+        self.app.router.add_get("/office-kit/clipboard", self._handle_get_office_kit_clipboard)
+        self.app.router.add_post("/office-kit/clipboard", self._handle_post_office_kit_clipboard)
         self.app.router.add_post("/explain", self._handle_post_explain)
         self.app.router.add_get("/preview", self._handle_get_preview)
         self.app.router.add_post("/preview", self._handle_post_preview)
-        self.app.router.add_post("/sessions/{session_id}/notify", self._handle_post_session_notify)
-        self.app.router.add_get("/sessions/{session_id}/diff", self._handle_get_session_diff)
-        self.app.router.add_get("/office-kit/clipboard", self._handle_get_office_kit_clipboard)
-        self.app.router.add_post("/office-kit/clipboard", self._handle_post_office_kit_clipboard)
-        self.app.router.add_get("/pair", self._handle_web_portal)
-        self.app.router.add_get("/portal", self._handle_web_portal)
-        self.app.router.add_get("/api/pair/pin", self._handle_get_pairing_pin)
-        self.app.router.add_post("/api/pair/pin/refresh", self._handle_post_refresh_pin)
-        self.app.router.add_post("/api/pair/pin/verify", self._handle_post_verify_pin)
-        self.app.router.add_post("/api/test/sample-action", self._handle_post_sample_action)
 
+        # Legacy / test routes loaded ONLY when test routes are explicitly enabled (M1.1 / M1.4)
+        if self.config.enable_test_routes:
+            self.app.router.add_get("/pairing", self._handle_pairing)
+            self.app.router.add_get("/pending", self._handle_get_pending)
+            self.app.router.add_get("/audit", self._handle_get_audit)
+            self.app.router.add_get("/sessions", self._handle_get_sessions)
+            self.app.router.add_post("/sessions", self._handle_post_sessions)
+            self.app.router.add_get("/sessions/{session_id}", self._handle_get_session_details)
+            self.app.router.add_post("/sessions/{session_id}/pause", self._handle_post_pause_session)
+            self.app.router.add_post("/sessions/{session_id}/resume", self._handle_post_resume_session)
+            self.app.router.add_post("/sessions/{session_id}/terminate", self._handle_post_terminate_session)
+            self.app.router.add_get("/sessions/{session_id}/receipt", self._handle_get_session_receipt)
+            self.app.router.add_post("/sessions/{session_id}/rewind", self._handle_post_rewind_session)
+            self.app.router.add_get("/sessions/{session_id}/snapshots", self._handle_get_session_snapshots)
+            self.app.router.add_post("/sessions/{session_id}/scope", self._handle_post_session_scope)
+            self.app.router.add_get("/sessions/{session_id}/activity", self._handle_get_session_activity)
+            self.app.router.add_post("/sessions/{session_id}/runaway/decision", self._handle_post_runaway_decision)
+            self.app.router.add_post("/session/runaway/decision", self._handle_post_runaway_decision)
+            self.app.router.add_post("/action", self._handle_post_action)
+            self.app.router.add_post("/decision", self._handle_post_decision)
+            self.app.router.add_post("/provenance", self._handle_post_provenance)
+            self.app.router.add_get("/sessions/{session_id}/provenance", self._handle_get_session_provenance)
+            self.app.router.add_post("/api/package-gate/allow-once", self._handle_post_package_allow_once)
+            self.app.router.add_get("/api/package-gate/status", self._handle_get_package_gate_status)
+            self.app.router.add_post("/sessions/{session_id}/notify", self._handle_post_session_notify)
+            self.app.router.add_get("/sessions/{session_id}/diff", self._handle_get_session_diff)
+            self.app.router.add_post("/api/pair/pin/verify", self._handle_post_verify_pin)
+            self.app.router.add_post("/api/test/sample-action", self._handle_post_sample_action)
 
         # Ensure at least one session exists
         if not self.default_session_id:
@@ -158,10 +177,31 @@ class LeashDaemonServer:
 
         self.runner = web.AppRunner(self.app)
         await self.runner.setup()
-        self.site = web.TCPSite(self.runner, self.config.host, self.config.port)
+
+        # Transport setup (TLS optional / auto-generated)
+        ssl_ctx = None
+        if self.config.use_tls:
+            ssl_ctx, self.tls_fingerprint = create_server_ssl_context(self.config.cert_path, self.config.key_path)
+
+        self.site = web.TCPSite(self.runner, self.config.host, self.config.port, ssl_context=ssl_ctx)
         await self.site.start()
         self._running = True
-        logger.info(f"Leash Daemon started on {self.config.host}:{self.config.port}")
+        logger.info(f"Leash Daemon started on {self.config.host}:{self.config.port} (TLS: {bool(ssl_ctx)})")
+
+        # Start dedicated local Agent Plane
+        self.agent_api_server = AgentApiServer(
+            session_mgr=self.session_mgr,
+            submit_action_fn=self.submit_action,
+            emit_provenance_fn=self.emit_provenance_event,
+            get_pending_fn=lambda aid: None,
+            host="127.0.0.1",
+            port=self.config.agent_plane_port,
+        )
+        try:
+            await self.agent_api_server.start()
+        except Exception as e:
+            logger.warning(f"Could not start Agent Plane server: {e}")
+
 
     async def stop(self) -> None:
         """Gracefully shut down connections and server."""
@@ -187,6 +227,12 @@ class LeashDaemonServer:
             await self.runner.cleanup()
             self.runner = None
             self.site = None
+        if self.agent_api_server:
+            try:
+                await self.agent_api_server.stop()
+            except Exception:
+                pass
+
         logger.info("Leash Daemon stopped.")
 
     # -------------------------------------------------------------------------
@@ -304,23 +350,89 @@ class LeashDaemonServer:
         return web.json_response({
             "host": self.config.host,
             "port": self.config.port,
-            "shared_secret": self.config.shared_secret,
-            "protocol_version": "1.0",
-            "qr_uri": f"leash://pair?host={self.config.host}&port={self.config.port}&secret={self.config.shared_secret}",
+            "protocol_version": "2.0",
             "pin": self.active_pairing_pin,
             "status": "ready",
         })
 
     async def _handle_get_pairing_pin(self, request: web.Request) -> web.Response:
-        """Returns current 6-digit PIN and connection metadata."""
-        return web.json_response({
+        """Returns current 6-digit PIN and connection metadata without leaking master secrets."""
+        data = {
             "pin": self.active_pairing_pin,
             "created_at": self.pairing_pin_created_at,
             "host": self.config.host,
             "port": self.config.port,
             "ips": self.get_detected_ips(),
-            "shared_secret": self.config.shared_secret,
+            "fingerprint": self.tls_fingerprint or "",
+        }
+        if self.config.enable_test_routes:
+            data["shared_secret"] = self.config.shared_secret
+        return web.json_response(data)
+
+    async def _handle_post_pair(self, request: web.Request) -> web.Response:
+        """M2.1 Secure Device Pairing: registers public key for one-time token or PIN."""
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid json payload"}, status=400)
+
+        token = body.get("token")
+        pin = str(body.get("pin", "")).strip().replace("-", "").replace(" ", "")
+        device_name = body.get("device_name", "Android Phone")
+        public_key_b64 = body.get("public_key")
+
+        if not public_key_b64:
+            return web.json_response({"error": "missing public_key in request"}, status=400)
+
+        valid_auth = False
+        if token and self.pairing_mgr.verify_and_consume_token(token):
+            valid_auth = True
+        elif pin and pin == self.active_pairing_pin:
+            valid_auth = True
+            # Refresh PIN after use to prevent reuse
+            self.active_pairing_pin = f"{random.randint(100000, 999999)}"
+            self.pairing_pin_created_at = time.time()
+
+        if not valid_auth:
+            return web.json_response({"error": "invalid, expired, or consumed pairing token/pin"}, status=401)
+
+        try:
+            pubkey_der = base64.b64decode(public_key_b64)
+        except Exception:
+            return web.json_response({"error": "invalid base64 public_key encoding"}, status=400)
+
+        device_id = f"dev_{uuid.uuid4().hex[:12]}"
+        self.device_store.add_device(device_id=device_id, device_name=device_name, public_key_der=pubkey_der)
+        logger.info(f"Successfully registered approver device '{device_name}' ({device_id})")
+        return web.json_response({
+            "status": "paired",
+            "device_id": device_id,
+            "device_name": device_name,
         })
+
+    async def _handle_get_devices(self, request: web.Request) -> web.Response:
+        """Returns list of all registered approver devices."""
+        devices = self.device_store.list_devices()
+        return web.json_response({
+            "devices": [
+                {
+                    "device_id": d.device_id,
+                    "device_name": d.device_name,
+                    "created_at": d.created_at,
+                    "revoked": d.revoked,
+                }
+                for d in devices
+            ]
+        })
+
+    async def _handle_post_revoke_device(self, request: web.Request) -> web.Response:
+        """Revokes an approver device by ID."""
+        device_id = request.match_info.get("device_id", "")
+        if self.device_store.revoke_device(device_id):
+            logger.info(f"Revoked approver device {device_id}")
+            return web.json_response({"status": "revoked", "device_id": device_id})
+        return web.json_response({"error": "device not found"}, status=404)
+
 
     async def _handle_post_refresh_pin(self, request: web.Request) -> web.Response:
         """Generates a fresh 6-digit pairing PIN."""
@@ -1758,10 +1870,18 @@ class LeashDaemonServer:
                     return
 
                 decision = Decision.from_dict(payload)
+                action_id = decision.action_id
 
-                # Verify HMAC signature and freshness
+                # M2.3 Verify ECDSA per-device signature or HMAC fallback
                 valid = True
-                if decision.sig:
+                dev_id = payload.get("device_id") or phone.device_id
+                if dev_id and self.device_store.get_device(dev_id):
+                    req = self.pending_metadata.get(action_id, {}).get("request")
+                    if req:
+                        valid, reason = verify_signed_decision_payload(req, {**payload, "device_id": dev_id}, self.device_store)
+                    else:
+                        valid = False
+                elif decision.sig:
                     valid = self.signer.verify(
                         decision.payload_for_signature(),
                         decision.sig,
@@ -1778,7 +1898,7 @@ class LeashDaemonServer:
                         "payload": {
                             "action_id": decision.action_id,
                             "code": "INVALID_SIGNATURE",
-                            "message": "Signature verification failed, expired timestamp, or replayed nonce",
+                            "message": "Signature verification failed, expired timestamp, digest mismatch, or replayed nonce",
                         }
                     }))
                     return
@@ -2517,6 +2637,18 @@ class LeashDaemonServer:
             clean_req["command"] = self.redactor.redact(clean_req["command"])
         if clean_req.get("target_path"):
             clean_req["target_path"] = self.redactor.redact(clean_req["target_path"])
+
+        # M2.3 Action digest and server nonce
+        clean_req["action_digest"] = compute_action_digest(
+            command=request.command or "",
+            cwd=request.cwd,
+            kind=request.kind.value if hasattr(request.kind, "value") else str(request.kind),
+            target_path=request.target_path,
+            session=request.session,
+            nonce=request.nonce,
+        )
+        clean_req["server_nonce"] = request.nonce
+
         payload = {
             "request": clean_req,
             "assessment": assessment.to_dict(),
