@@ -1,6 +1,9 @@
 <div align="center">
 
-# ⚡ LEASH: On-Device AI Bodyguard for Autonomous Coding Agents
+<img src="./docs/brandkit/Leash AI Coding Brand Banner.png" alt="Leash - A Human Checkpoint for AI Coding Agents" width="100%" style="border-radius: 14px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);" />
+
+<br/>
+<br/>
 
 [![iQOO Hackathon Project](https://img.shields.io/badge/iQOO_Hackathon-2026_Finalist_Project-FF4081?style=for-the-badge&logo=android&logoColor=white)](#-iqoo-hackathon-2026)
 [![Fail Closed](https://img.shields.io/badge/Security-Fail--Closed_30s-00C853?style=for-the-badge&logo=shield&logoColor=white)](#-zero-trust-fail-closed-guarantees)
@@ -19,13 +22,13 @@
 <br/>
 <br/>
 
-[🌟 Overview](#-executive-overview) •
 [🏆 iQOO Hackathon](#-iqoo-hackathon-2026) •
-[👥 Team & Roles](#-team-members--roles) •
-[⚠️ The Problem & Gap](#-the-problem--gap-analysis) •
+[👥 Team Vibesync](#-team-members--roles) •
+[🎮 How to Use Before Coding](#-how-to-use-leash-before-coding-to-get-alerts) •
+[⚠️ Problem & Gap](#-the-problem--gap-analysis) •
 [💡 Solution](#-the-leash-solution) •
 [🏗️ Architecture](#-system-architecture) •
-[📸 Prototype Screenshots](#-prototype-screenshots-walkthrough) •
+[📸 Screenshots](#-prototype-screenshots-walkthrough) •
 [🛠️ Tech Stack](#-technology-stack) •
 [🚀 Quickstart](#-getting-started)
 
@@ -35,7 +38,7 @@
 
 ## 🏆 iQOO Hackathon 2026
 
-**Leash** was conceived, architected, and engineered for the **iQOO Hackathon 2026**. 
+**Leash** was conceived, architected, and engineered for the **iQOO Hackathon 2026** under the **Developer Tools** track.
 
 Modern mobile smartphones possess extraordinary neural hardware, biometric security enclaves, and isolated operating environments that remain completely untapped for developer security. Leash bridges this gap by turning high-performance mobile devices into dedicated, physical **Out-of-Band Security Bodyguards** for autonomous AI coding agents operating on developer workstations.
 
@@ -45,12 +48,104 @@ Modern mobile smartphones possess extraordinary neural hardware, biometric secur
 
 <div align="center">
 
+<img src="./docs/brandkit/Team Vibesync Profile Card.png" alt="Team Vibesync - Track: Developer Tools" width="820" style="border-radius: 12px; margin-bottom: 20px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.3);" />
+
 | Team Member | Roles & Core Responsibilities | Focus Area |
 | :--- | :--- | :--- |
-| **Vishal Lakshmikanthan** | <ul><li>**Chief System Architect** & Security Lead</li><li>**Dual-Device Out-of-Band Protocol** Designer</li><li>**Laptop Daemon Core Engine** (`aiohttp` + WebSocket daemon)</li><li>**Cryptographic Security Engine** (HMAC-SHA256, Nonce tracking, Replay prevention)</li><li>**Interceptor & Deterministic Risk Engine** (Static heuristics & Severity matrix)</li><li>**Fail-Closed Decision Pipeline** (Fail-closed 30s timeout enforcement)</li><li>**On-Device AI Gemma Integration** (MediaPipe Tasks GenAI, CPU/GPU INT4 inference)</li><li>**Taint & Provenance Tracking** (AST-based prompt injection detection)</li><li>**Hidden Text Scanner** (Zero-width Unicode & BiDi override detection)</li><li>**Git Worktree Isolation & 1-Tap Snapshot Rewind Engine**</li></ul> | **Core Systems, Cryptography, AI & Daemon Infrastructure** |
-| **Sneha** | <ul><li>**Lead Frontend & UI/UX Engineer**</li><li>**Jetpack Compose Architecture** & State Orchestration</li><li>**Dynamic Glassmorphism Design System** & Dark Mode Aesthetics</li><li>**Interactive Gesture Approvals** (Slide-to-approve, Biometric triggers)</li><li>**Interactive Security Analytics Visualization** (Custom canvas bezier curve graphs)</li><li>**Zero-Trust POS-80 Digital Receipt UI** (Paper tear animations & Ticket styling)</li><li>**Micro-Animations & Differentiated Haptic Feedback Waveforms**</li><li>**Responsive Layouts** & Screen Navigation Flows</li></ul> | **Mobile Guard UI/UX, Design Systems & Interaction Flows** |
+| **Vishal Lakshmikanthan** | <ul><li>**Team Leader & Chief System Architect**</li><li>**Dual-Device Out-of-Band Protocol** Designer</li><li>**Laptop Daemon Core Engine** (`aiohttp` + WebSocket daemon)</li><li>**Cryptographic Security Engine** (HMAC-SHA256, Nonce tracking, Replay prevention)</li><li>**Interceptor & Deterministic Risk Engine** (Static heuristics & Severity matrix)</li><li>**Fail-Closed Decision Pipeline** (Fail-closed 30s timeout enforcement)</li><li>**On-Device AI Gemma Integration** (MediaPipe Tasks GenAI, CPU/GPU INT4 inference)</li><li>**Taint & Provenance Tracking** (AST-based prompt injection detection)</li><li>**Hidden Text Scanner** (Zero-width Unicode & BiDi override detection)</li><li>**Git Worktree Isolation & 1-Tap Snapshot Rewind Engine**</li></ul> | **Core Systems, Cryptography, AI & Daemon Infrastructure** |
+| **Sneha C** | <ul><li>**Team Member & Lead Frontend / UI-UX Engineer**</li><li>**Jetpack Compose Architecture** & State Orchestration</li><li>**Dynamic Glassmorphism Design System** & Dark Mode Aesthetics</li><li>**Interactive Gesture Approvals** (Slide-to-approve, Biometric triggers)</li><li>**Interactive Security Analytics Visualization** (Custom canvas bezier curve graphs)</li><li>**Zero-Trust POS-80 Digital Receipt UI** (Paper tear animations & Ticket styling)</li><li>**Micro-Animations & Differentiated Haptic Feedback Waveforms**</li><li>**Responsive Layouts** & Screen Navigation Flows</li></ul> | **Mobile Guard UI/UX, Design Systems & Interaction Flows** |
 
 </div>
+
+---
+
+## 🎮 How to Use Leash Before Coding to Get Alerts
+
+Follow this step-by-step developer workflow to ensure your workstation is protected and your phone receives real-time approval alerts **before** your AI coding agent touches the terminal or files:
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                   DEVELOPER WORKFLOW WITH LEASH                                        │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  [1. START DAEMON]            [2. PAIR PHONE]             [3. LAUNCH AGENT]          [4. REAL-TIME GUARD]
+   python -m daemon.cli         Open Leash on Phone         python -m daemon.cli run   Phone alerts on risk:
+   server --port 8765   ───►    Enter 6-digit PIN   ───►    -- claude / aider   ───►   30s Fail-Closed
+   (Laptop Security Portal)     (Biometric link active)     (PATH shims injected)      (Gemma-2B explains)
+```
+
+### Step 1: Launch the Laptop Daemon
+Open a terminal on your development workstation and start the background Leash daemon:
+```bash
+python -m daemon.cli server --port 8765
+```
+- The daemon launches the local control plane and opens the **Leash Security Portal** at `http://localhost:8765`.
+- A 6-digit single-use pairing PIN and QR code appear on screen.
+
+### Step 2: Pair Your Mobile Guard (Over USB or Wi-Fi)
+1. **If using USB wire** (recommended for zero latency):
+   ```bash
+   adb reverse tcp:8765 tcp:8765
+   ```
+2. Open the **Leash Guard** app on your phone.
+3. Tap **Pair Laptop Daemon**, type the 6-digit code from your laptop screen, and tap **Verify PIN & Connect Link**.
+4. The phone lights up with **`AUTHENTICATED & SECURE`** (Green badge). Your bidirectional cryptographic leash is now locked and ready!
+
+### Step 3: Run Your AI Coding Agent Under Leash Protection
+Before letting an autonomous agent execute tasks, prefix the agent launch command with `python -m daemon.cli run --`:
+
+```bash
+# 🔹 Protect Claude Code CLI:
+python -m daemon.cli run -- claude
+
+# 🔹 Protect Aider:
+python -m daemon.cli run -- aider
+
+# 🔹 Protect AutoGPT / Custom Agent Script:
+python -m daemon.cli run -- python -m reference_agent.agent
+
+# 🔹 Or launch an interactive protected development shell:
+python -m daemon.cli wrap -- bash
+```
+
+> **What happens under the hood?**
+> - Leash creates an isolated Git worktree (`leash/<session-id>`) so uncommitted host changes remain safe.
+> - Leash injects secure PATH shims for `bash`, `sh`, `git`, `curl`, `npm`, `pip`, and tool-call APIs.
+> - The agent receives a restricted session token; the master HMAC pairing secret **never** leaves the daemon.
+
+### Step 4: Code Naturally While Leash Guards in Real Time
+- **Safe Commands (Auto-Allowed)**:
+  Commands like `cat file.py`, `ls -la`, `git status`, or `npm test` execute at native speed without interruption.
+- **High-Risk & Critical Actions (Intercepted & Paused)**:
+  The moment the agent attempts a dangerous or destructive action:
+  - 🛑 **The agent process instantly freezes on your laptop.**
+  - 📳 **Your phone immediately wakes up and vibrates** with a distinct haptic pulse.
+  - 🧠 **On-Device Gemma-2B AI** analyzes the exact command and displays a plain English risk summary:
+    - *Example*: `"Package executes arbitrary preinstall script upon installation, creating supply-chain compromise risk."*
+  - ⏳ **A 30-Second Fail-Closed Countdown** begins on the mobile screen.
+
+### Step 5: Authorize or Block from Your Phone
+You have three simple choices on your phone screen:
+1. **Slide to Approve / Tap Biometric (Fingerprint)**:
+   - Phone transmits an HMAC-SHA256 signed approval (`ALLOW`).
+   - Laptop unpauses the agent and executes the command within the isolated worktree.
+2. **Tap Deny**:
+   - Phone transmits a signed denial (`DENY`).
+   - Laptop halts execution (exit code 126) and sends structured feedback to the agent so it can self-correct with a safer alternative.
+3. **Walk Away / Ignore**:
+   - If the 30-second timer expires without approval, Leash enforces **Fail-Closed default**.
+   - The command is blocked automatically.
+
+### Step 6: Review & Export Zero-Trust PR Receipts
+When the agent finishes its task:
+```bash
+# View session timeline and blocked attempts:
+python -m daemon.cli audit --tail 10
+
+# Generate tamper-evident audit report for GitHub PR:
+python -m daemon.cli report
+```
+You can also tap **PR Receipt** on your phone to copy the signed POS-80 Markdown receipt straight into your pull request!
 
 ---
 
@@ -91,6 +186,10 @@ Current agent containment approaches have critical security flaws:
 ---
 
 ## 💡 The Leash Solution
+
+<div align="center">
+  <img src="./docs/brandkit/LEASH Orange Dog Logo.png" alt="Leash Logo" width="320" style="margin: 20px 0;" />
+</div>
 
 **Leash** introduces a **physical, dual-device trust boundary**:
 
@@ -410,6 +509,6 @@ Feel the haptic pulse on your phone, review the on-device AI explanation, and sl
 
 <div align="center">
 
-Made with ⚡ for the **iQOO Hackathon 2026** by **Vishal Lakshmikanthan** & **Sneha**.
+Made with ⚡ for the **iQOO Hackathon 2026** by **Team Vibesync** (Vishal Lakshmikanthan & Sneha C).
 
 </div>
