@@ -37,7 +37,7 @@ class GitGuard:
         if subcommand == "push":
             has_force = any(arg in self.FORCE_FLAGS for arg in git_args[1:])
             if has_force:
-                return True, Severity.CRITICAL, "Force push detected. Can overwrite shared remote history."
+                return True, Severity.HIGH, "Force push detected. Can overwrite shared remote history."
             return True, Severity.HIGH, "Git push to remote repository."
 
         # 2. Hard reset or destructive clean

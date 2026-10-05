@@ -142,7 +142,18 @@ class LeashWebSocketClient(
     ) {
         scope.launch {
             try {
-                val cleanHost = targetHost.trim().ifEmpty { "127.0.0.1" }
+                var cleanHost = targetHost.trim().ifEmpty { "127.0.0.1" }
+                val isEmulator = (android.os.Build.FINGERPRINT.startsWith("generic")
+                        || android.os.Build.FINGERPRINT.startsWith("unknown")
+                        || android.os.Build.MODEL.contains("google_sdk")
+                        || android.os.Build.MODEL.contains("Emulator")
+                        || android.os.Build.MODEL.contains("Android SDK built for x86")
+                        || android.os.Build.MANUFACTURER.contains("Genymotion")
+                        || (android.os.Build.BRAND.startsWith("generic") && android.os.Build.DEVICE.startsWith("generic"))
+                        || "google_sdk" == android.os.Build.PRODUCT)
+                if (cleanHost == "10.0.2.2" && !isEmulator) {
+                    cleanHost = "127.0.0.1"
+                }
                 val cleanPin = pin.trim().replace("-", "").replace(" ", "")
                 val url = "http://$cleanHost:$targetPort/api/pair/pin/verify"
                 val jsonPayload = """{"pin":"$cleanPin","device_name":"$deviceName","device_id":"$deviceId"}"""

@@ -53,15 +53,28 @@ class MainActivity : FragmentActivity() {
         super.onCreate(savedInstanceState)
         vibrator = getSystemService(Vibrator::class.java)
 
-        // Initialize connection to local laptop daemon (10.0.2.2 for emulator default)
+        // Initialize connection: 10.0.2.2 for emulator, 127.0.0.1 for physical USB / ADB reverse
+        val isEmulator = (android.os.Build.FINGERPRINT.startsWith("generic")
+                || android.os.Build.FINGERPRINT.startsWith("unknown")
+                || android.os.Build.MODEL.contains("google_sdk")
+                || android.os.Build.MODEL.contains("Emulator")
+                || android.os.Build.MODEL.contains("Android SDK built for x86")
+                || android.os.Build.MANUFACTURER.contains("Genymotion")
+                || (android.os.Build.BRAND.startsWith("generic") && android.os.Build.DEVICE.startsWith("generic"))
+                || "google_sdk" == android.os.Build.PRODUCT)
+        val defaultHost = if (isEmulator) "10.0.2.2" else "127.0.0.1"
+
         client = LeashWebSocketClient(
-            host = "10.0.2.2",
+            host = defaultHost,
             port = 8765,
             sharedSecret = "leash-dev-secret-change-me",
             context = this
         )
         client.connect()
         LeashForegroundService.startService(this)
+
+        // Initialize on-device Gemma 2B model runner safely in background
+        com.vibesync.leash.data.engine.OnDeviceRiskExplainer.init(applicationContext)
 
         // Wire notification approval action handler
         LeashForegroundService.onNotificationDecision = { actionId, approve ->

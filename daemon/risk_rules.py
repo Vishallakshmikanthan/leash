@@ -102,7 +102,7 @@ class RemoteScriptExecutionRule(BaseRule):
                 for tool in DOWNLOAD_TOOLS:
                     if tool in sub_lower:
                         return RuleMatch(
-                            rule_id="R-NET-PIPE-EXEC",
+                            rule_id="R-NET-SUB-EXEC",
                             category=self.category,
                             severity=Severity.HIGH,
                             summary=f"Subshell execution evaluates downloaded payload from {tool}.",

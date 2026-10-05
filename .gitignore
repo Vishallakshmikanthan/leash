@@ -26,6 +26,10 @@ wheels/
 # Leash local runtime
 .leash/
 
+# On-device model binaries
+gemma-2b-gpu/
+*.bin
+
 # Android
 .gradle/
 build/
@@ -33,3 +37,4 @@ build/
 .idea/
 local.properties
 .DS_Store
+

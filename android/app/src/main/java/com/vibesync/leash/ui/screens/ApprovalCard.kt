@@ -85,6 +85,31 @@ fun ApprovalCard(
         )
     }
 
+    // Asynchronous On-Device Model Inference (smoothly enhances template when ready)
+    LaunchedEffect(bundle.request.id) {
+        if (initialExplanation == null && OnDeviceRiskExplainer.isModelAvailable()) {
+            val modelExp = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                OnDeviceRiskExplainer.explain(
+                    command = req.command ?: req.target_path ?: "",
+                    category = assessment.category,
+                    severity = assessment.severity.name.lowercase(),
+                    context = mapOf(
+                        "target_path" to req.target_path,
+                        "taint_source" to (req.taint.source ?: assessment.taint_source),
+                        "taint_line" to (req.taint.line ?: assessment.taint_line),
+                        "existing_summary" to assessment.summary,
+                        "existing_why" to assessment.why,
+                        "existing_alternative" to assessment.safer_alternative,
+                        "action_id" to req.id
+                    )
+                )
+            }
+            if (modelExp.source == "model") {
+                currentExplanation = modelExp
+            }
+        }
+    }
+
     // Live Countdown Timer (Fail-Closed Default 30s)
     var remainingSeconds by remember(bundle.request.id) { mutableIntStateOf(initialTimeoutSeconds) }
     var isTimerPaused by remember(bundle.request.id) { mutableStateOf(false) }

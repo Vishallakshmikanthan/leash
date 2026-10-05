@@ -100,6 +100,11 @@ class PolicyEvaluator:
         if request.taint.tainted or request.scope_flags:
             return False
 
+        if request.kind == ActionKind.SHELL and request.command:
+            cmd = request.command
+            if any(sym in cmd for sym in ("|", ";", "&&", "||", "`", "$(", ">")):
+                return False
+
         assessment = self.evaluate(request)
         return assessment.outcome == PolicyOutcome.ALLOW
 
