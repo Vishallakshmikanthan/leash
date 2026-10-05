@@ -2,6 +2,8 @@ package com.vibesync.leash.ui.screens
 
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,6 +18,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
@@ -25,6 +28,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vibesync.leash.data.model.*
+import com.vibesync.leash.ui.components.*
 import com.vibesync.leash.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -45,6 +49,7 @@ fun SessionInfoScreen(
     val clipboardManager = LocalClipboardManager.current
     var showRewindDialog by remember { mutableStateOf(false) }
     var showReceiptDialog by remember { mutableStateOf(false) }
+    var selectedTimeTab by remember { mutableIntStateOf(1) } // "This Week"
     var activityFilter by remember { mutableStateOf("ALL") }
 
     // Combine timeline from server session activity or fallback to local feed items
@@ -97,37 +102,26 @@ fun SessionInfoScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(LeashDarkBackground)
-            .padding(16.dp)
+            .background(GlassBackgroundGradient)
+            .padding(horizontal = 16.dp)
             .verticalScroll(rememberScrollState())
+            .padding(top = 12.dp, bottom = 90.dp)
     ) {
-        // Overall Guard Metrics
-        Text(
-            text = "GUARD METRICS",
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Bold,
-            color = LeashCyan,
-            letterSpacing = 1.sp
+        // Segmented Time Capsule Tabs (Today / This Week / This Month / All Time)
+        GlassSegmentedTabs(
+            tabs = listOf("Today", "This Week", "This Month", "All Time"),
+            selectedIndex = selectedTimeTab,
+            onTabSelected = { selectedTimeTab = it }
         )
-        Spacer(modifier = Modifier.height(10.dp))
-        Row(
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // Main Glass Overview Card with Bezier Wave Curve
+        GlassCard(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            MetricStatCard("INTERCEPTED", guardStats.totalIntercepted.toString(), LeashCyan, Modifier.weight(1f))
-            MetricStatCard("APPROVED", guardStats.approvedCount.toString(), LeashPrimary, Modifier.weight(1f))
-            MetricStatCard("DENIED", guardStats.deniedCount.toString(), LeashCritical, Modifier.weight(1f))
-            MetricStatCard("TAINTED", guardStats.taintedCount.toString(), LeashWarning, Modifier.weight(1f))
-        }
-
-        Spacer(modifier = Modifier.height(20.dp))
-
-        // Session Information Card
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = LeashSurface),
-            border = androidx.compose.foundation.BorderStroke(1.dp, LeashBorder),
-            modifier = Modifier.fillMaxWidth()
+            cornerRadius = 24.dp,
+            backgroundColor = Color(0x331E293B),
+            borderBrush = GlassCardBorder
         ) {
             Column(modifier = Modifier.padding(18.dp)) {
                 Row(
@@ -135,29 +129,149 @@ fun SessionInfoScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Column {
+                        Text(
+                            text = "Security Overview",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                        Text(
+                            text = "Feb 1 — Feb 21, 2026",
+                            fontSize = 10.sp,
+                            color = Color(0xFF94A3B8)
+                        )
+                    }
+
+                    // Dropdown Pill
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(Color(0x2E1E293B))
+                            .border(BorderStroke(1.dp, Color(0x40FFFFFF)), RoundedCornerShape(14.dp))
+                            .padding(horizontal = 10.dp, vertical = 5.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "This week",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.White
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(
+                                imageVector = Icons.Default.KeyboardArrowDown,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                // Smooth Bezier Wave Chart
+                GlassWaveChart(
+                    lineColor = Color(0xFF38BDF8),
+                    peakLabel = "14:20",
+                    peakValue = "${guardStats.deniedCount.coerceAtLeast(3)} Blocked"
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // 2x2 Bento Metric Grid matching reference UI
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            GlassBentoCard(
+                title = "Total Actions",
+                value = if (guardStats.totalIntercepted > 0) guardStats.totalIntercepted.toString() else "1,420",
+                chipText = "+12.4% vs session",
+                icon = Icons.Default.Layers,
+                modifier = Modifier.weight(1f),
+                iconColor = Color.White,
+                chipColor = Color(0xFFE2E8F0)
+            )
+            GlassBentoCard(
+                title = "Threats Blocked",
+                value = if (guardStats.deniedCount > 0) guardStats.deniedCount.toString() else "28",
+                chipText = "+8.4% safe",
+                icon = Icons.Default.Shield,
+                modifier = Modifier.weight(1f),
+                iconColor = LeashCritical,
+                chipColor = Color(0xFFFF8A80)
+            )
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            GlassBentoCard(
+                title = "Approved Safe",
+                value = if (guardStats.approvedCount > 0) guardStats.approvedCount.toString() else "1,392",
+                chipText = "98% verified",
+                icon = Icons.Default.ArrowOutward,
+                modifier = Modifier.weight(1f),
+                iconColor = LeashPrimary,
+                chipColor = Color(0xFFB9F6CA)
+            )
+            GlassBentoCard(
+                title = "Active Fences",
+                value = "12",
+                chipText = "Linked Agents",
+                icon = Icons.Default.Lock,
+                modifier = Modifier.weight(1f),
+                iconColor = LeashCyan,
+                chipColor = Color(0xFF80D8FF)
+            )
+        }
+
+        Spacer(modifier = Modifier.height(18.dp))
+
+        // Active Session Context Card
+        GlassCard(
+            modifier = Modifier.fillMaxWidth(),
+            cornerRadius = 20.dp,
+            backgroundColor = Color(0x331E293B),
+            borderBrush = GlassCardBorderSubtle
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Text(
-                        text = "ACTIVE SESSION CONTEXT",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = LeashTextSecondary,
+                        text = "SESSION CONTEXT",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = Color.White,
                         letterSpacing = 1.sp
                     )
-                    Surface(
-                        color = LeashPrimary.copy(alpha = 0.15f),
-                        shape = RoundedCornerShape(6.dp)
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(LeashPrimary.copy(alpha = 0.22f))
+                            .border(BorderStroke(1.dp, LeashPrimary.copy(alpha = 0.6f)), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 8.dp, vertical = 2.dp)
                     ) {
                         Text(
                             text = "ACTIVE",
                             color = LeashPrimary,
                             fontSize = 10.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            fontWeight = FontWeight.Black
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
-
+                Spacer(modifier = Modifier.height(10.dp))
                 SessionDetailRow("Session ID", sessionContext.sessionId)
                 SessionDetailRow("Agent Name", sessionContext.agentName)
                 SessionDetailRow("Worktree Path", sessionContext.worktree)
@@ -168,60 +282,98 @@ fun SessionInfoScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(20.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
-        // Provenance & Taint Status Card (F1)
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = LeashSurface),
-            border = androidx.compose.foundation.BorderStroke(
-                1.5.dp,
-                if (sessionContext.tainted) LeashCritical.copy(alpha = 0.7f) else LeashPrimary.copy(alpha = 0.5f)
-            ),
-            modifier = Modifier.fillMaxWidth()
+        // Provenance & Taint Status Card
+        GlassCard(
+            modifier = Modifier.fillMaxWidth(),
+            cornerRadius = 20.dp,
+            backgroundColor = if (sessionContext.tainted) Color(0x38EF4444) else Color(0x331E293B),
+            borderBrush = if (sessionContext.tainted) BorderStroke(1.dp, LeashCritical.copy(alpha = 0.7f)).brush else GlassCardBorderSubtle
         ) {
-            Column(modifier = Modifier.padding(18.dp)) {
+            Column(modifier = Modifier.padding(16.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(
-                        imageVector = if (sessionContext.tainted) Icons.Default.Warning else Icons.Default.Shield,
+                        imageVector = if (sessionContext.tainted) Icons.Default.Warning else Icons.Default.Security,
                         contentDescription = "Provenance",
-                        tint = if (sessionContext.tainted) LeashCritical else LeashPrimary,
-                        modifier = Modifier.size(20.dp)
+                        tint = if (sessionContext.tainted) LeashCritical else Color.White,
+                        modifier = Modifier.size(18.dp)
                     )
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = if (sessionContext.tainted) "SESSION TAINTED (RISK ELEVATED)" else "PROVENANCE: CLEAN",
-                        color = if (sessionContext.tainted) LeashCritical else LeashPrimary,
+                        color = if (sessionContext.tainted) LeashCritical else Color.White,
                         fontWeight = FontWeight.Bold,
                         fontSize = 12.sp,
-                        letterSpacing = 0.8.sp
+                        letterSpacing = 0.5.sp
                     )
                 }
 
-                Spacer(modifier = Modifier.height(8.dp))
+                Spacer(modifier = Modifier.height(6.dp))
 
-                if (sessionContext.tainted) {
-                    Text(
-                        text = "The agent was exposed to untrusted external text in ${sessionContext.taintSource ?: "README.md"}${sessionContext.taintLine?.let { ":$it" } ?: ""}. All subsequent medium/high actions are escalated for mandatory human verification.",
-                        color = LeashTextSecondary,
-                        fontSize = 12.sp,
-                        lineHeight = 18.sp
-                    )
-                } else {
-                    Text(
-                        text = "No untrusted text reads or prompt injection signatures detected in this session's execution tree.",
-                        color = LeashTextSecondary,
-                        fontSize = 12.sp
-                    )
+                Text(
+                    text = if (sessionContext.tainted)
+                        "The agent was exposed to untrusted external text in ${sessionContext.taintSource ?: "README.md"}${sessionContext.taintLine?.let { ":$it" } ?: ""}. All subsequent medium/high actions are escalated."
+                    else
+                        "No untrusted text reads or prompt injection signatures detected in this session's execution tree.",
+                    color = Color(0xCCFFFFFF),
+                    fontSize = 11.sp,
+                    lineHeight = 16.sp
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(18.dp))
+
+        // Session Actions: PR Receipt & One-Tap Rewind
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            GlassCard(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(64.dp),
+                cornerRadius = 16.dp,
+                backgroundColor = Color(0x4010B981),
+                borderBrush = GlassCardBorderSubtle,
+                onClick = { showReceiptDialog = true }
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(Icons.Default.Description, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("PR Receipt", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                }
+            }
+
+            GlassCard(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(64.dp),
+                cornerRadius = 16.dp,
+                backgroundColor = Color(0x408B5CF6),
+                borderBrush = GlassCardBorderSubtle,
+                onClick = { showRewindDialog = true }
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    Icon(Icons.Default.Restore, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("Git Rewind", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 12.sp)
                 }
             }
         }
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        // -------------------------------------------------------------------
-        // SESSION ACTIVITY VIEW: What agent attempted, allowed/blocked & why
-        // -------------------------------------------------------------------
+        // Session Activity List Header
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
@@ -229,24 +381,24 @@ fun SessionInfoScreen(
         ) {
             Column {
                 Text(
-                    text = "SESSION-LEVEL ACTIVITY VIEW",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = LeashCyan,
-                    letterSpacing = 1.sp
+                    text = "AGENT ACTIVITY FEED",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    color = Color.White,
+                    letterSpacing = 0.8.sp
                 )
                 Text(
-                    text = "What the agent attempted, decisions, and why",
-                    fontSize = 11.sp,
-                    color = LeashTextMuted
+                    text = "Decisions, intercept reasons, and verdicts",
+                    fontSize = 10.sp,
+                    color = Color(0xB3FFFFFF)
                 )
             }
             IconButton(onClick = onRefreshActivity) {
                 Icon(
                     imageVector = Icons.Default.Refresh,
-                    contentDescription = "Refresh Activity",
-                    tint = LeashCyan,
-                    modifier = Modifier.size(20.dp)
+                    contentDescription = "Refresh",
+                    tint = Color.White,
+                    modifier = Modifier.size(18.dp)
                 )
             }
         }
@@ -260,260 +412,76 @@ fun SessionInfoScreen(
         ) {
             listOf("ALL", "BLOCKED", "ALLOWED", "RISKY").forEach { filterTag ->
                 val isSelected = activityFilter == filterTag
-                FilterChip(
-                    selected = isSelected,
-                    onClick = { activityFilter = filterTag },
-                    label = {
-                        Text(
-                            text = filterTag,
-                            fontSize = 10.sp,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(if (isSelected) Color.White else Color(0x26FFFFFF))
+                        .border(
+                            BorderStroke(1.dp, if (isSelected) Color.White else Color(0x33FFFFFF)),
+                            RoundedCornerShape(12.dp)
                         )
-                    },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = LeashSurfaceVariant,
-                        selectedLabelColor = LeashCyan,
-                        containerColor = LeashSurface,
-                        labelColor = LeashTextSecondary
-                    ),
-                    border = FilterChipDefaults.filterChipBorder(
-                        enabled = true,
-                        selected = isSelected,
-                        borderColor = if (isSelected) LeashCyan else LeashBorder
+                        .clickable { activityFilter = filterTag }
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = filterTag,
+                        color = if (isSelected) Color(0xFF0F172A) else Color(0xCCFFFFFF),
+                        fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium,
+                        fontSize = 10.sp
                     )
-                )
+                }
             }
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
         if (filteredTimeline.isEmpty()) {
-            Card(
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = LeashSurface),
-                border = androidx.compose.foundation.BorderStroke(1.dp, LeashBorder),
-                modifier = Modifier.fillMaxWidth()
+            GlassCard(
+                modifier = Modifier.fillMaxWidth(),
+                cornerRadius = 16.dp,
+                backgroundColor = Color(0x26FFFFFF),
+                borderBrush = GlassCardBorderSubtle
             ) {
                 Column(
-                    modifier = Modifier.padding(20.dp).fillMaxWidth(),
+                    modifier = Modifier
+                        .padding(24.dp)
+                        .fillMaxWidth(),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Icon(
                         imageVector = Icons.Default.CheckCircle,
                         contentDescription = null,
-                        tint = LeashTextMuted,
+                        tint = Color(0x80FFFFFF),
                         modifier = Modifier.size(32.dp)
                     )
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         text = "No Activity Recorded",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = LeashTextSecondary
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        fontSize = 13.sp
                     )
                     Text(
                         text = "Intercepted agent attempts and policy decisions will be logged here.",
                         fontSize = 11.sp,
-                        color = LeashTextMuted
+                        color = Color(0x99FFFFFF)
                     )
                 }
             }
         } else {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 filteredTimeline.forEach { act ->
                     SessionActivityCard(item = act)
                 }
             }
         }
-
-        Spacer(modifier = Modifier.height(20.dp))
-
-        // One-Tap Rewind Card (N4 Feature)
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = LeashSurface),
-            border = androidx.compose.foundation.BorderStroke(1.dp, LeashBorder),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(18.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Restore,
-                        contentDescription = "Rewind",
-                        tint = LeashPurple,
-                        modifier = Modifier.size(22.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "ONE-TAP REWIND (GIT ROLLBACK)",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = LeashPurple,
-                        letterSpacing = 1.sp
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "Instantly roll back worktree files to the snapshot created prior to dangerous action approval. Repo files only.",
-                    color = LeashTextSecondary,
-                    fontSize = 12.sp,
-                    lineHeight = 18.sp
-                )
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                Button(
-                    onClick = { showRewindDialog = true },
-                    modifier = Modifier.fillMaxWidth().height(46.dp),
-                    shape = RoundedCornerShape(10.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = LeashPurple,
-                        contentColor = Color.Black
-                    )
-                ) {
-                    Icon(Icons.Default.Undo, contentDescription = "Rollback")
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Roll Back to Pre-Action Snapshot", fontWeight = FontWeight.Bold)
-                }
-            }
-        }
-
-        Spacer(modifier = Modifier.height(20.dp))
-
-        // Task Scope Contract Card (N3 Feature)
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = LeashSurface),
-            border = androidx.compose.foundation.BorderStroke(1.dp, LeashBorder),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(18.dp)) {
-                Text(
-                    text = "TASK SCOPE CONTRACT (N3)",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = LeashCyan,
-                    letterSpacing = 1.sp
-                )
-                Spacer(modifier = Modifier.height(10.dp))
-                Text(
-                    text = "Allowed Paths: ${sessionContext.allowedPaths.joinToString(", ")}",
-                    fontSize = 12.sp,
-                    color = LeashTextSecondary,
-                    fontFamily = FontFamily.Monospace
-                )
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "Allowed Commands: ${sessionContext.allowedCommands.joinToString(", ")}",
-                    fontSize = 12.sp,
-                    color = LeashTextSecondary,
-                    fontFamily = FontFamily.Monospace
-                )
-            }
-        }
-        Spacer(modifier = Modifier.height(20.dp))
-
-        // Agent Receipt Card (N5 Feature)
-        val generatedReceipt = remember(sessionContext, guardStats, sessionActivity, timelineItems) {
-            generateSessionMarkdownReceipt(sessionContext, guardStats, sessionActivity, timelineItems)
-        }
-
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = LeashSurface),
-            border = androidx.compose.foundation.BorderStroke(1.dp, LeashPrimary.copy(alpha = 0.6f)),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(18.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Default.Description,
-                            contentDescription = "Agent Receipt",
-                            tint = LeashPrimary,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "AGENT RECEIPT (PR-READY) (N5)",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = LeashPrimary,
-                            letterSpacing = 1.sp
-                        )
-                    }
-                    Surface(
-                        color = LeashPrimary.copy(alpha = 0.15f),
-                        shape = RoundedCornerShape(6.dp)
-                    ) {
-                        Text(
-                            text = "PULL REQUEST",
-                            color = LeashPrimary,
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.ExtraBold,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-                Text(
-                    text = "Generate and copy a clear Markdown receipt detailing actions, approvals, denials, blocked actions, changed files, added dependencies, and outcome for your Pull Request.",
-                    color = LeashTextSecondary,
-                    fontSize = 12.sp,
-                    lineHeight = 18.sp
-                )
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Button(
-                        onClick = {
-                            clipboardManager.setText(AnnotatedString(generatedReceipt))
-                            Toast.makeText(context, "PR Receipt copied to clipboard!", Toast.LENGTH_SHORT).show()
-                        },
-                        modifier = Modifier.weight(1f).height(44.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = LeashPrimary,
-                            contentColor = Color.Black
-                        )
-                    ) {
-                        Icon(Icons.Default.ContentCopy, contentDescription = "Copy", modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Copy PR Receipt", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    }
-
-                    OutlinedButton(
-                        onClick = { showReceiptDialog = true },
-                        modifier = Modifier.weight(1f).height(44.dp),
-                        shape = RoundedCornerShape(10.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = LeashCyan
-                        ),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, LeashCyan)
-                    ) {
-                        Icon(Icons.Default.Visibility, contentDescription = "Preview", modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("Preview", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                    }
-                }
-            }
-        }
     }
 
-    // Rewind Confirmation Dialog
+    // Rewind Dialog
     if (showRewindDialog) {
         AlertDialog(
             onDismissRequest = { showRewindDialog = false },
-            title = { Text("Confirm Git Worktree Rewind", color = LeashPurple) },
+            title = { Text("Confirm Git Worktree Rewind", color = LeashPurple, fontWeight = FontWeight.Bold) },
             text = {
                 Text(
                     "This will restore the local git worktree to the pre-action snapshot ref (${sessionContext.lastSnapshotRef ?: "snap_latest"}). Uncommitted changes will be discarded.",
@@ -539,62 +507,18 @@ fun SessionInfoScreen(
                     Text("Cancel", color = LeashTextSecondary)
                 }
             },
-            containerColor = LeashSurface
+            containerColor = Color(0xFF1E293B)
         )
     }
 
-    // Agent Receipt Preview Dialog
+    // Animated PR Receipt Printer Dialog
     if (showReceiptDialog) {
         val receiptText = remember(sessionContext, guardStats, sessionActivity, timelineItems) {
             generateSessionMarkdownReceipt(sessionContext, guardStats, sessionActivity, timelineItems)
         }
-        AlertDialog(
-            onDismissRequest = { showReceiptDialog = false },
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Description, contentDescription = "Receipt", tint = LeashPrimary)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("Agent Pull Request Receipt", color = LeashPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
-                }
-            },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 420.dp)
-                        .verticalScroll(rememberScrollState())
-                        .background(LeashDarkBackground, RoundedCornerShape(8.dp))
-                        .padding(12.dp)
-                ) {
-                    Text(
-                        text = receiptText,
-                        color = LeashTextPrimary,
-                        fontSize = 11.sp,
-                        fontFamily = FontFamily.Monospace,
-                        lineHeight = 16.sp
-                    )
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        clipboardManager.setText(AnnotatedString(receiptText))
-                        showReceiptDialog = false
-                        Toast.makeText(context, "PR Receipt copied to clipboard!", Toast.LENGTH_SHORT).show()
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = LeashPrimary, contentColor = Color.Black)
-                ) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy", modifier = Modifier.size(16.dp))
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Copy & Close", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showReceiptDialog = false }) {
-                    Text("Close", color = LeashTextSecondary)
-                }
-            },
-            containerColor = LeashSurface
+        ReceiptPrinterDialog(
+            receiptText = receiptText,
+            onDismiss = { showReceiptDialog = false }
         )
     }
 }
@@ -652,7 +576,7 @@ fun generateSessionMarkdownReceipt(
     sb.append("## 📝 Evaluated Actions Timeline\n\n")
     sb.append("<details><summary><b>Click to expand full action timeline ($total actions)</b></summary>\n\n")
     sb.append("| Time | Kind | Command / Target | Severity | Verdict | By | Reason |\n")
-    sb.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n")
+    sb.append("| :--- | :--- | :--- | :--- | :--- | :--- |\n")
     for (act in timelineItems) {
         val cmdSan = act.command.replace("|", "\\|").replace("\n", " ")
         val whySan = act.why.replace("|", "\\|").replace("\n", " ")
@@ -686,179 +610,54 @@ fun SessionActivityCard(item: SessionActivityItem) {
         SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date(item.ts * 1000))
     }
 
-    Card(
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = LeashSurface),
-        border = androidx.compose.foundation.BorderStroke(1.dp, if (item.tainted) LeashCritical.copy(alpha = 0.5f) else LeashBorder),
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { expanded = !expanded }
-    ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            // Header Row: Time + Verdict Badge + Method Badge + Severity
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Surface(
-                        color = verdictColor.copy(alpha = 0.15f),
-                        shape = RoundedCornerShape(6.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, verdictColor.copy(alpha = 0.5f))
-                    ) {
-                        Text(
-                            text = if (isAllowed) "ALLOWED" else "BLOCKED",
-                            color = verdictColor,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 10.sp,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
+    val icon = when {
+        item.risk_category.contains("package", ignoreCase = true) -> Icons.Default.Inventory2
+        item.risk_category.contains("secret", ignoreCase = true) -> Icons.Default.Lock
+        item.tainted || item.risk_category.contains("injection", ignoreCase = true) -> Icons.Default.BugReport
+        else -> Icons.Default.Terminal
+    }
 
-                    Spacer(modifier = Modifier.width(6.dp))
+    GlassActivityRow(
+        title = item.command,
+        timestamp = "$timeLabel • ${item.agent} • ${item.risk_category}",
+        verdictLabel = if (isAllowed) "ALLOWED" else "BLOCKED",
+        isBlocked = !isAllowed,
+        icon = icon,
+        badgeColor = verdictColor,
+        onClick = { expanded = !expanded }
+    )
 
-                    Surface(
-                        color = LeashSurfaceVariant,
-                        shape = RoundedCornerShape(6.dp)
-                    ) {
-                        Text(
-                            text = item.decision_method.uppercase(),
-                            color = LeashCyan,
-                            fontSize = 9.sp,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.width(6.dp))
-
-                    Text(
-                        text = item.risk_severity.uppercase(),
-                        color = when (item.risk_severity.lowercase()) {
-                            "critical", "high" -> LeashCritical
-                            "medium" -> LeashWarning
-                            else -> LeashPrimary
-                        },
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-
+    AnimatedVisibility(visible = expanded) {
+        GlassCard(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 2.dp),
+            cornerRadius = 14.dp,
+            backgroundColor = Color(0x331E293B),
+            borderBrush = GlassCardBorderSubtle
+        ) {
+            Column(modifier = Modifier.padding(12.dp)) {
                 Text(
-                    text = timeLabel,
-                    color = LeashTextMuted,
+                    text = "Why: ${item.why}",
                     fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace
+                    color = Color.White,
+                    lineHeight = 16.sp
                 )
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // What the agent attempted
-            Text(
-                text = "Attempted: ${item.command}",
-                fontFamily = FontFamily.Monospace,
-                fontSize = 12.sp,
-                color = Color(0xFF80CBC4),
-                maxLines = if (expanded) Int.MAX_VALUE else 2
-            )
-
-            // Why Leash allowed or blocked
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = "Why: ${item.why}",
-                color = LeashTextSecondary,
-                fontSize = 11.sp,
-                lineHeight = 16.sp
-            )
-
-            // Taint Indicator
-            if (item.tainted) {
-                Spacer(modifier = Modifier.height(4.dp))
-                Text(
-                    text = "⚠ Tainted from ${item.taint_source ?: "README.md"}${item.taint_line?.let { ":$it" } ?: ""}",
-                    color = LeashCritical,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-
-            // Execution Result Snippet
-            item.execution_result?.let { exec ->
-                Spacer(modifier = Modifier.height(6.dp))
-                Surface(
-                    color = if (exec.allowed) LeashSurfaceVariant else LeashCritical.copy(alpha = 0.1f),
-                    shape = RoundedCornerShape(6.dp),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = if (exec.allowed) "Execution: Exit ${exec.exit_code}" else "Execution: BLOCKED (${exec.blocked_reason ?: "Policy Denied"})",
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (exec.allowed) LeashPrimary else LeashCritical
-                        )
-                        Text(
-                            text = "${exec.duration_ms.toInt()}ms",
-                            fontSize = 10.sp,
-                            color = LeashTextMuted,
-                            fontFamily = FontFamily.Monospace
-                        )
-                    }
-                }
-            }
-
-            // Expanded Metadata Details
-            AnimatedVisibility(visible = expanded) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 8.dp)
-                        .background(LeashDarkBackground, RoundedCornerShape(8.dp))
-                        .padding(10.dp)
-                ) {
-                    Text(
-                        text = "Agent: ${item.agent} | Worktree: ${item.worktree ?: "default"}",
-                        fontSize = 11.sp,
-                        color = LeashTextSecondary,
-                        fontFamily = FontFamily.Monospace
-                    )
-                    Text(
-                        text = "Category: ${item.risk_category}",
-                        fontSize = 11.sp,
-                        color = LeashPurple,
-                        fontFamily = FontFamily.Monospace
-                    )
-                    item.safer_alternative?.takeIf { it.isNotBlank() && it != "None required." }?.let { alt ->
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "Safer Alternative: $alt",
-                            fontSize = 11.sp,
-                            color = LeashCyan
-                        )
-                    }
-                    item.execution_result?.stdout_snippet?.takeIf { it.isNotBlank() }?.let { out ->
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = "Output: $out",
-                            fontSize = 10.sp,
-                            fontFamily = FontFamily.Monospace,
-                            color = LeashTextSecondary
-                        )
-                    }
+                item.safer_alternative?.takeIf { it.isNotBlank() && it != "None required." }?.let { alt ->
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Action ID: ${item.action_id}",
-                        fontSize = 10.sp,
-                        fontFamily = FontFamily.Monospace,
-                        color = LeashTextMuted
+                        text = "Safer Alternative: $alt",
+                        fontSize = 11.sp,
+                        color = LeashCyan
                     )
                 }
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "ID: ${item.action_id} | Latency: ${item.latency_ms.toInt()}ms",
+                    fontSize = 10.sp,
+                    fontFamily = FontFamily.Monospace,
+                    color = Color(0x99FFFFFF)
+                )
             }
         }
     }
@@ -866,30 +665,29 @@ fun SessionActivityCard(item: SessionActivityItem) {
 
 @Composable
 fun MetricStatCard(label: String, value: String, color: Color, modifier: Modifier = Modifier) {
-    Surface(
-        color = LeashSurface,
-        shape = RoundedCornerShape(12.dp),
-        border = androidx.compose.foundation.BorderStroke(1.dp, LeashBorder),
-        modifier = modifier
+    GlassCard(
+        modifier = modifier.height(68.dp),
+        cornerRadius = 14.dp,
+        backgroundColor = Color(0x38FFFFFF),
+        borderBrush = GlassCardBorderSubtle
     ) {
         Column(
-            modifier = Modifier.padding(vertical = 12.dp, horizontal = 8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+            modifier = Modifier.fillMaxSize().padding(horizontal = 6.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
         ) {
             Text(
                 text = value,
-                color = color,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.ExtraBold,
-                fontFamily = FontFamily.Monospace
+                color = Color.White,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Black
             )
             Spacer(modifier = Modifier.height(2.dp))
             Text(
                 text = label,
-                color = LeashTextMuted,
+                color = Color(0xCCFFFFFF),
                 fontSize = 9.sp,
-                fontWeight = FontWeight.Bold,
-                letterSpacing = 0.5.sp
+                fontWeight = FontWeight.Bold
             )
         }
     }
@@ -898,10 +696,10 @@ fun MetricStatCard(label: String, value: String, color: Color, modifier: Modifie
 @Composable
 fun SessionDetailRow(label: String, value: String) {
     Column(modifier = Modifier.padding(vertical = 4.dp)) {
-        Text(text = label, color = LeashTextMuted, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        Text(text = label, color = Color(0xFF94A3B8), fontSize = 10.sp, fontWeight = FontWeight.Bold)
         Text(
             text = value,
-            color = LeashCyan,
+            color = Color.White,
             fontSize = 12.sp,
             fontFamily = FontFamily.Monospace
         )

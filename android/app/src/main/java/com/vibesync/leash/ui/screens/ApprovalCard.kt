@@ -21,8 +21,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import com.vibesync.leash.ui.components.GlassCard
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -119,18 +121,20 @@ fun ApprovalCard(
 
     val scrollState = rememberScrollState()
 
-    Card(
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = LeashSurface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+    GlassCard(
+        cornerRadius = 24.dp,
+        backgroundColor = Color(0xF20F172A),
+        borderBrush = Brush.linearGradient(
+            listOf(
+                severityColor.copy(alpha = 0.9f),
+                Color(0x33FFFFFF),
+                severityColor.copy(alpha = 0.4f)
+            )
+        ),
+        borderWidth = 1.5.dp,
         modifier = modifier
             .fillMaxWidth()
             .padding(16.dp)
-            .border(
-                width = 1.5.dp,
-                color = severityColor.copy(alpha = 0.85f),
-                shape = RoundedCornerShape(20.dp)
-            )
     ) {
         Column(
             modifier = Modifier

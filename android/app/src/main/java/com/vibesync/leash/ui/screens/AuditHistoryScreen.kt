@@ -4,6 +4,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -18,6 +19,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -26,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vibesync.leash.data.model.AuditFeedItem
 import com.vibesync.leash.data.model.Verdict
+import com.vibesync.leash.ui.components.GlassCard
 import com.vibesync.leash.ui.theme.*
 
 @Composable
@@ -42,15 +45,17 @@ fun AuditHistoryScreen(
             val matchesFilter = when (selectedFilter) {
                 "ALLOWED" -> item.decision.verdict == Verdict.ALLOW
                 "BLOCKED" -> item.decision.verdict == Verdict.DENY
-                "TAINTED" -> item.action.taint.tainted
+                "TAINTED" -> item.bundle.request.taint.tainted || item.bundle.assessment.tainted_escalation
                 else -> true
             }
             val matchesSearch = if (searchQuery.isBlank()) true else {
                 val q = searchQuery.lowercase()
-                (item.action.command ?: "").lowercase().contains(q) ||
-                    (item.action.target_path ?: "").lowercase().contains(q) ||
-                    item.action.agent.lowercase().contains(q) ||
-                    item.assessment.category.lowercase().contains(q)
+                val req = item.bundle.request
+                val assess = item.bundle.assessment
+                (req.command ?: "").lowercase().contains(q) ||
+                    (req.target_path ?: "").lowercase().contains(q) ||
+                    req.agent.lowercase().contains(q) ||
+                    assess.category.lowercase().contains(q)
             }
             matchesFilter && matchesSearch
         }
@@ -59,8 +64,9 @@ fun AuditHistoryScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(LeashDarkBackground)
+            .background(GlassBackgroundGradient)
             .padding(horizontal = 16.dp, vertical = 12.dp)
+            .padding(bottom = 85.dp)
     ) {
         // Top Header
         Row(
@@ -70,44 +76,84 @@ fun AuditHistoryScreen(
         ) {
             Column {
                 Text(
-                    text = "AUDIT TRAIL",
-                    fontSize = 18.sp,
+                    text = "AUDIT TRAIL & LOGS",
+                    fontSize = 16.sp,
                     fontWeight = FontWeight.Black,
                     color = Color.White,
                     letterSpacing = 1.sp
                 )
                 Text(
-                    text = "${feedItems.size} total verified actions recorded",
-                    fontSize = 12.sp,
-                    color = LeashTextSecondary
+                    text = "${filteredItems.size} verified events recorded",
+                    fontSize = 11.sp,
+                    color = Color(0xCCFFFFFF)
                 )
             }
 
             IconButton(onClick = onRefresh) {
-                Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = LeashCyan)
+                Icon(
+                    imageVector = Icons.Default.Refresh,
+                    contentDescription = "Refresh",
+                    tint = Color.White,
+                    modifier = Modifier.size(20.dp)
+                )
             }
         }
 
-        Spacer(modifier = Modifier.height(10.dp))
+        Spacer(modifier = Modifier.height(12.dp))
 
-        // Search Bar
-        OutlinedTextField(
-            value = searchQuery,
-            onValueChange = { searchQuery = it },
-            placeholder = { Text("Search actions, commands, agents...", fontSize = 12.sp, color = LeashTextSecondary) },
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = LeashTextSecondary, modifier = Modifier.size(18.dp)) },
-            singleLine = true,
-            shape = RoundedCornerShape(12.dp),
-            colors = OutlinedTextFieldDefaults.colors(
-                focusedContainerColor = LeashSurface,
-                unfocusedContainerColor = LeashSurface,
-                focusedBorderColor = LeashCyan,
-                unfocusedBorderColor = LeashBorder,
-                focusedTextColor = Color.White,
-                unfocusedTextColor = Color.White
-            ),
-            modifier = Modifier.fillMaxWidth()
-        )
+        // Search Input
+        GlassCard(
+            modifier = Modifier.fillMaxWidth(),
+            cornerRadius = 16.dp,
+            backgroundColor = Color(0x38FFFFFF),
+            borderBrush = GlassCardBorderSubtle
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Search,
+                    contentDescription = "Search",
+                    tint = Color(0x99FFFFFF),
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                TextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = {
+                        Text("Search commands, agents, categories...", fontSize = 12.sp, color = Color(0x80FFFFFF))
+                    },
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        cursorColor = Color.White,
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White
+                    ),
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
+                if (searchQuery.isNotBlank()) {
+                    IconButton(
+                        onClick = { searchQuery = "" },
+                        modifier = Modifier.size(20.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Clear search",
+                            tint = Color.White,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                }
+            }
+        }
 
         Spacer(modifier = Modifier.height(10.dp))
 
@@ -116,23 +162,24 @@ fun AuditHistoryScreen(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            listOf("ALL", "BLOCKED", "ALLOWED", "TAINTED").forEach { filter ->
-                val isSelected = selectedFilter == filter
-                Surface(
-                    color = if (isSelected) LeashCyan.copy(alpha = 0.2f) else LeashSurface,
-                    shape = RoundedCornerShape(8.dp),
-                    border = androidx.compose.foundation.BorderStroke(
-                        1.dp,
-                        if (isSelected) LeashCyan else LeashBorder
-                    ),
-                    modifier = Modifier.clickable { selectedFilter = filter }
+            listOf("ALL", "ALLOWED", "BLOCKED", "TAINTED").forEach { filterTag ->
+                val isSelected = selectedFilter == filterTag
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (isSelected) Color.White else Color(0x24FFFFFF))
+                        .border(
+                            BorderStroke(1.dp, if (isSelected) Color.White else Color(0x2EFFFFFF)),
+                            RoundedCornerShape(10.dp)
+                        )
+                        .clickable { selectedFilter = filterTag }
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
                 ) {
                     Text(
-                        text = filter,
-                        color = if (isSelected) LeashCyan else LeashTextSecondary,
-                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                        fontSize = 11.sp,
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        text = filterTag,
+                        fontSize = 10.sp,
+                        fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium,
+                        color = if (isSelected) Color(0xFF0F172A) else Color(0xCCFFFFFF)
                     )
                 }
             }
@@ -140,28 +187,34 @@ fun AuditHistoryScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Timeline List
         if (filteredItems.isEmpty()) {
-            Box(
+            GlassCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
-                contentAlignment = Alignment.Center
+                cornerRadius = 16.dp,
+                backgroundColor = Color(0x24FFFFFF),
+                borderBrush = GlassCardBorderSubtle
             ) {
-                Text(
-                    text = "No audit events match your filter.",
-                    color = LeashTextSecondary,
-                    fontSize = 13.sp
-                )
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "No audit events match your filter.",
+                        color = Color(0xCCFFFFFF),
+                        fontSize = 13.sp
+                    )
+                }
             }
         } else {
             LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(filteredItems, key = { it.action.id }) { item ->
+                items(filteredItems, key = { it.id }) { item ->
                     AuditItemCard(item)
                 }
             }
@@ -174,12 +227,14 @@ private fun AuditItemCard(item: AuditFeedItem) {
     val context = LocalContext.current
     val isAllowed = item.decision.verdict == Verdict.ALLOW
     val statusColor = if (isAllowed) LeashPrimary else LeashCritical
+    val req = item.bundle.request
+    val assess = item.bundle.assessment
 
-    Card(
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = LeashSurface),
-        border = androidx.compose.foundation.BorderStroke(1.dp, LeashBorder),
-        modifier = Modifier.fillMaxWidth()
+    GlassCard(
+        modifier = Modifier.fillMaxWidth(),
+        cornerRadius = 14.dp,
+        backgroundColor = Color(0x38FFFFFF),
+        borderBrush = GlassCardBorderSubtle
     ) {
         Column(modifier = Modifier.padding(12.dp)) {
             // Header Row: Verdict Badge + Time + Agent
@@ -189,24 +244,25 @@ private fun AuditItemCard(item: AuditFeedItem) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Surface(
-                        color = statusColor.copy(alpha = 0.18f),
-                        shape = RoundedCornerShape(6.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, statusColor.copy(alpha = 0.5f))
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(statusColor.copy(alpha = 0.22f))
+                            .border(BorderStroke(1.dp, statusColor.copy(alpha = 0.6f)), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
                         Text(
                             text = if (isAllowed) "ALLOWED" else "BLOCKED",
                             color = statusColor,
                             fontWeight = FontWeight.Black,
-                            fontSize = 10.sp,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                            fontSize = 10.sp
                         )
                     }
 
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "AGENT: ${item.action.agent}",
-                        color = LeashTextSecondary,
+                        text = "AGENT: ${req.agent}",
+                        color = Color.White,
                         fontSize = 10.sp,
                         fontFamily = FontFamily.Monospace
                     )
@@ -214,7 +270,7 @@ private fun AuditItemCard(item: AuditFeedItem) {
 
                 Text(
                     text = item.decision.by.name,
-                    color = LeashTextSecondary,
+                    color = Color(0xB3FFFFFF),
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold
                 )
@@ -224,7 +280,7 @@ private fun AuditItemCard(item: AuditFeedItem) {
 
             // Command / Target text
             Text(
-                text = item.action.command ?: item.action.target_path ?: "-",
+                text = req.command ?: req.target_path ?: "-",
                 color = Color.White,
                 fontSize = 12.sp,
                 fontFamily = FontFamily.Monospace,
@@ -240,8 +296,8 @@ private fun AuditItemCard(item: AuditFeedItem) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = item.assessment.summary,
-                    color = LeashTextSecondary,
+                    text = assess.summary,
+                    color = Color(0xCCFFFFFF),
                     fontSize = 11.sp,
                     maxLines = 1,
                     modifier = Modifier.weight(1f)
@@ -250,12 +306,12 @@ private fun AuditItemCard(item: AuditFeedItem) {
                 IconButton(
                     onClick = {
                         val clipMgr = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                        clipMgr.setPrimaryClip(ClipData.newPlainText("Action Command", item.action.command ?: ""))
+                        clipMgr.setPrimaryClip(ClipData.newPlainText("Action Command", req.command ?: ""))
                         Toast.makeText(context, "Command copied to clipboard", Toast.LENGTH_SHORT).show()
                     },
                     modifier = Modifier.size(20.dp)
                 ) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy", tint = LeashCyan, modifier = Modifier.size(13.dp))
+                    Icon(Icons.Default.ContentCopy, contentDescription = "Copy", tint = Color.White, modifier = Modifier.size(13.dp))
                 }
             }
         }

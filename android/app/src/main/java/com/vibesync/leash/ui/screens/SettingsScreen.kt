@@ -16,6 +16,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.vibesync.leash.ui.components.GlassCard
 import com.vibesync.leash.ui.theme.*
 
 @Composable
@@ -35,8 +36,9 @@ fun SettingsScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(LeashDarkBackground)
+            .background(GlassBackgroundGradient)
             .padding(16.dp)
+            .padding(bottom = 85.dp)
             .verticalScroll(scrollState)
     ) {
         Text(
@@ -49,17 +51,17 @@ fun SettingsScreen(
         Text(
             text = "Configure local policy enforcement authority and on-device security rules.",
             fontSize = 12.sp,
-            color = LeashTextSecondary
+            color = Color(0xFF94A3B8)
         )
 
         Spacer(modifier = Modifier.height(16.dp))
 
         // Policy Settings Card
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = LeashSurface),
-            border = androidx.compose.foundation.BorderStroke(1.dp, LeashBorder),
-            modifier = Modifier.fillMaxWidth()
+        GlassCard(
+            modifier = Modifier.fillMaxWidth(),
+            cornerRadius = 20.dp,
+            backgroundColor = Color(0x331E293B),
+            borderBrush = GlassCardBorderSubtle
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
                 Text(

@@ -7,13 +7,18 @@ import android.widget.Toast
 import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.biometric.BiometricPrompt
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -23,6 +28,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -32,6 +39,7 @@ import androidx.core.content.ContextCompat
 import com.vibesync.leash.data.model.*
 import com.vibesync.leash.network.LeashWebSocketClient
 import com.vibesync.leash.service.LeashForegroundService
+import com.vibesync.leash.ui.components.*
 import com.vibesync.leash.ui.screens.*
 import com.vibesync.leash.ui.theme.*
 import kotlinx.coroutines.flow.collectLatest
@@ -110,121 +118,140 @@ class MainActivity : FragmentActivity() {
                     }
                 }
 
-                Scaffold(
-                    topBar = {
-                        LeashTopAppBar(
-                            connectionState = connectionState,
-                            onOpenDemoSheet = { showDemoSheet = true }
-                        )
-                    },
-                    bottomBar = {
-                        LeashBottomNav(
-                            selectedTab = selectedTab,
-                            pendingCount = pendingQueue.size,
-                            onTabSelected = { selectedTab = it }
-                        )
-                    },
-                    containerColor = LeashDarkBackground
-                ) { paddingValues ->
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(paddingValues)
-                    ) {
-                        when (selectedTab) {
-                            GuardTab.GUARD -> {
-                                GuardMainScreen(
-                                    pendingQueue = pendingQueue,
-                                    blockedNotice = blockedNotice,
-                                    connectionState = connectionState,
-                                    sessionContext = sessionContext,
-                                    onApprove = { bundle, decidedBy ->
-                                        if (decidedBy == DecidedBy.BIOMETRIC) {
-                                            authenticateBiometric(bundle)
-                                        } else {
-                                            client.approveAction(bundle, DecidedBy.TAP)
-                                            triggerApprovedHaptic()
-                                            Toast.makeText(this@MainActivity, "Approved via Tap", Toast.LENGTH_SHORT).show()
-                                        }
-                                    },
-                                    onDeny = { bundle, note ->
-                                        client.denyAction(bundle, DecidedBy.TAP, note)
-                                        triggerBlockedHaptic()
-                                        Toast.makeText(this@MainActivity, "Action Blocked (Feedback Sent)", Toast.LENGTH_SHORT).show()
-                                    },
-                                    onTimeout = { bundle ->
-                                        client.timeoutAction(bundle)
-                                        triggerBlockedHaptic()
-                                        Toast.makeText(this@MainActivity, "Action Timed Out (Fail-Closed)", Toast.LENGTH_SHORT).show()
-                                    },
-                                    onDismissBlockedNotice = {
-                                        client.clearBlockedNotice()
-                                    },
-                                    onViewFeed = {
-                                        selectedTab = GuardTab.FEED
-                                    },
-                                    onOpenDemo = { showDemoSheet = true }
-                                )
-                            }
-                            GuardTab.FEED -> {
-                                ActionFeedScreen(feedItems = feedItems)
-                            }
-                            GuardTab.SESSION -> {
-                                SessionInfoScreen(
-                                    sessionContext = sessionContext,
-                                    guardStats = guardStats,
-                                    sessionActivity = sessionActivity,
-                                    feedItems = feedItems,
-                                    onRefreshActivity = {
-                                        client.requestSessionActivity()
-                                    },
-                                    onRewind = { callback ->
-                                        client.triggerRewind(callback)
-                                    }
-                                )
-                            }
-                            GuardTab.AUDIT -> {
-                                AuditHistoryScreen(
-                                    feedItems = feedItems,
-                                    onRefresh = {
-                                        client.requestSessionActivity()
-                                    }
-                                )
-                            }
-                            GuardTab.SETTINGS -> {
-                                SettingsScreen(
-                                    onSavePairing = { host, port, secret ->
-                                        client.updatePairing(host, port, secret)
-                                    },
-                                    onDisconnect = {
-                                        client.disconnect()
-                                    }
-                                )
-                            }
-                            GuardTab.PAIRING -> {
-                                PairingScreen(
-                                    currentHost = client.host,
-                                    currentPort = client.port,
-                                    currentSecret = client.sharedSecret,
-                                    connectionState = connectionState,
-                                    onSavePairing = { host, port, secret ->
-                                        client.updatePairing(host, port, secret)
-                                    },
-                                    onDisconnect = {
-                                        client.disconnect()
-                                    }
-                                )
-                            }
-                        }
-
-                        if (showDemoSheet) {
-                            DemoSandboxSheet(
-                                onTriggerScenario = { scenario ->
-                                    client.injectDemoScenario(scenario)
-                                    selectedTab = GuardTab.GUARD
-                                },
-                                onDismiss = { showDemoSheet = false }
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(GlassBackgroundGradient)
+                ) {
+                    Scaffold(
+                        topBar = {
+                            LeashTopAppBar(
+                                connectionState = connectionState,
+                                onOpenDemoSheet = { showDemoSheet = true },
+                                onOpenPairing = { selectedTab = GuardTab.PAIRING }
                             )
+                        },
+                        bottomBar = {
+                            LeashBottomNav(
+                                selectedTab = selectedTab,
+                                pendingCount = pendingQueue.size,
+                                onTabSelected = { selectedTab = it }
+                            )
+                        },
+                        containerColor = Color.Transparent
+                    ) { paddingValues ->
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(paddingValues)
+                        ) {
+                            AnimatedContent(
+                                targetState = selectedTab,
+                                transitionSpec = {
+                                    fadeIn(animationSpec = tween(220)) togetherWith fadeOut(animationSpec = tween(220))
+                                },
+                                label = "tab_crossfade"
+                            ) { currentTab ->
+                                when (currentTab) {
+                                    GuardTab.GUARD -> {
+                                        GuardMainScreen(
+                                            pendingQueue = pendingQueue,
+                                            blockedNotice = blockedNotice,
+                                            connectionState = connectionState,
+                                            sessionContext = sessionContext,
+                                            onApprove = { bundle, decidedBy ->
+                                                if (decidedBy == DecidedBy.BIOMETRIC) {
+                                                    authenticateBiometric(bundle)
+                                                } else {
+                                                    client.approveAction(bundle, DecidedBy.TAP)
+                                                    triggerApprovedHaptic()
+                                                    Toast.makeText(this@MainActivity, "Approved via Tap", Toast.LENGTH_SHORT).show()
+                                                }
+                                            },
+                                            onDeny = { bundle, note ->
+                                                client.denyAction(bundle, DecidedBy.TAP, note)
+                                                triggerBlockedHaptic()
+                                                Toast.makeText(this@MainActivity, "Action Blocked (Feedback Sent)", Toast.LENGTH_SHORT).show()
+                                            },
+                                            onTimeout = { bundle ->
+                                                client.timeoutAction(bundle)
+                                                triggerBlockedHaptic()
+                                                Toast.makeText(this@MainActivity, "Action Timed Out (Fail-Closed)", Toast.LENGTH_SHORT).show()
+                                            },
+                                            onDismissBlockedNotice = {
+                                                client.clearBlockedNotice()
+                                            },
+                                            onViewFeed = {
+                                                selectedTab = GuardTab.FEED
+                                            },
+                                            onOpenDemo = { showDemoSheet = true },
+                                            onOpenPairing = { selectedTab = GuardTab.PAIRING }
+                                        )
+                                    }
+                                    GuardTab.FEED -> {
+                                        ActionFeedScreen(feedItems = feedItems)
+                                    }
+                                    GuardTab.SESSION -> {
+                                        SessionInfoScreen(
+                                            sessionContext = sessionContext,
+                                            guardStats = guardStats,
+                                            sessionActivity = sessionActivity,
+                                            feedItems = feedItems,
+                                            onRefreshActivity = {
+                                                client.requestSessionActivity()
+                                            },
+                                            onRewind = { callback ->
+                                                client.triggerRewind(callback)
+                                            }
+                                        )
+                                    }
+                                    GuardTab.AUDIT -> {
+                                        AuditHistoryScreen(
+                                            feedItems = feedItems,
+                                            onRefresh = {
+                                                client.requestSessionActivity()
+                                            }
+                                        )
+                                    }
+                                    GuardTab.SETTINGS -> {
+                                        SettingsScreen(
+                                            onSavePairing = { host, port, secret ->
+                                                client.updatePairing(host, port, secret)
+                                            },
+                                            onDisconnect = {
+                                                client.disconnect()
+                                            }
+                                        )
+                                    }
+                                    GuardTab.PAIRING -> {
+                                        PairingScreen(
+                                            currentHost = client.host,
+                                            currentPort = client.port,
+                                            currentSecret = client.sharedSecret,
+                                            connectionState = connectionState,
+                                            onSavePairing = { host, port, secret ->
+                                                client.updatePairing(host, port, secret)
+                                            },
+                                            onDisconnect = {
+                                                client.disconnect()
+                                            },
+                                            onPairWithPin = { host, port, pin, callback ->
+                                                client.pairWithPin(host, port, pin, callback)
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+
+                            if (showDemoSheet) {
+                                DemoSandboxSheet(
+                                    onTriggerScenario = { scenario ->
+                                        client.injectDemoScenario(scenario)
+                                        selectedTab = GuardTab.GUARD
+                                    },
+                                    onDismiss = { showDemoSheet = false }
+                                )
+                            }
                         }
                     }
                 }
@@ -232,78 +259,121 @@ class MainActivity : FragmentActivity() {
         }
     }
 
-    @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     private fun LeashTopAppBar(
         connectionState: ConnectionState,
-        onOpenDemoSheet: () -> Unit
+        onOpenDemoSheet: () -> Unit,
+        onOpenPairing: () -> Unit
     ) {
         val (statusColor, statusLabel) = when (connectionState) {
             ConnectionState.CONNECTED -> Pair(LeashPrimary, "CONNECTED")
             ConnectionState.AUTHENTICATING -> Pair(LeashCyan, "AUTH")
             ConnectionState.CONNECTING -> Pair(LeashWarning, "CONNECTING")
-            ConnectionState.RECONNECTING -> Pair(LeashCritical, "RETRY (FAIL-CLOSED)")
+            ConnectionState.RECONNECTING -> Pair(LeashCritical, "RETRY")
             ConnectionState.DISCONNECTED -> Pair(LeashTextMuted, "DISCONNECTED")
         }
 
-        TopAppBar(
-            title = {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .statusBarsPadding()
+                .padding(horizontal = 16.dp, vertical = 8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                // App Logo / Brand (matching ⚡ Finzo in reference image)
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(32.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0x38FFFFFF))
+                            .border(BorderStroke(1.dp, Color(0x66FFFFFF)), RoundedCornerShape(10.dp)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Bolt,
+                            contentDescription = "Leash",
+                            tint = Color.White,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "LEASH",
+                        text = "Leash",
                         fontWeight = FontWeight.Black,
                         color = Color.White,
-                        fontSize = 18.sp,
-                        letterSpacing = 1.sp
+                        fontSize = 20.sp,
+                        letterSpacing = (-0.5).sp
                     )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text(
-                        text = "GUARD",
-                        fontWeight = FontWeight.Bold,
-                        color = LeashCyan,
-                        fontSize = 18.sp,
-                        letterSpacing = 1.sp
-                    )
-                    Spacer(modifier = Modifier.width(12.dp))
-                    Surface(
-                        color = statusColor.copy(alpha = 0.2f),
-                        shape = RoundedCornerShape(8.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, statusColor.copy(alpha = 0.6f))
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(7.dp)
-                                    .background(statusColor, CircleShape)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = statusLabel,
-                                color = statusColor,
-                                fontSize = 10.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                letterSpacing = 0.5.sp
-                            )
-                        }
+                }
+
+                // Middle Status Capsule Pill
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Color(0x2EFFFFFF))
+                        .border(BorderStroke(1.dp, Color(0x4DFFFFFF)), RoundedCornerShape(16.dp))
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(7.dp)
+                                .background(statusColor, CircleShape)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = statusLabel,
+                            color = Color.White,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            letterSpacing = 0.5.sp
+                        )
                     }
                 }
-            },
-            actions = {
-                IconButton(onClick = onOpenDemoSheet) {
-                    Icon(
-                        imageVector = Icons.Default.Science,
-                        contentDescription = "Demo Sandbox",
-                        tint = LeashCyan
-                    )
+
+                // Right Actions: QR Scanner icon in frosted square + Demo Sandbox
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0x2EFFFFFF))
+                            .border(BorderStroke(1.dp, Color(0x4DFFFFFF)), RoundedCornerShape(10.dp))
+                            .clickable(onClick = onOpenPairing),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.QrCodeScanner,
+                            contentDescription = "Pairing",
+                            tint = Color.White,
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .size(34.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(Color(0x2EFFFFFF))
+                            .border(BorderStroke(1.dp, Color(0x4DFFFFFF)), RoundedCornerShape(10.dp))
+                            .clickable(onClick = onOpenDemoSheet),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Science,
+                            contentDescription = "Demo Sandbox",
+                            tint = Color.White,
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
                 }
-            },
-            colors = TopAppBarDefaults.topAppBarColors(
-                containerColor = LeashSurface
-            )
-        )
+            }
+        }
     }
 
     @Composable
@@ -312,104 +382,27 @@ class MainActivity : FragmentActivity() {
         pendingCount: Int,
         onTabSelected: (GuardTab) -> Unit
     ) {
-        NavigationBar(
-            containerColor = LeashSurface,
-            tonalElevation = 8.dp
-        ) {
-            NavigationBarItem(
-                selected = selectedTab == GuardTab.GUARD,
-                onClick = { onTabSelected(GuardTab.GUARD) },
-                icon = {
-                    BadgedBox(badge = {
-                        if (pendingCount > 0) {
-                            Badge(containerColor = LeashCritical) {
-                                Text(pendingCount.toString(), color = Color.White, fontWeight = FontWeight.Bold)
-                            }
-                        }
-                    }) {
-                        Icon(Icons.Default.Shield, contentDescription = "Guard")
-                    }
-                },
-                label = { Text("Guard", fontSize = 11.sp) },
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = LeashPrimary,
-                    selectedTextColor = LeashPrimary,
-                    indicatorColor = LeashSurfaceVariant,
-                    unselectedIconColor = LeashTextSecondary,
-                    unselectedTextColor = LeashTextSecondary
-                )
-            )
-
-            NavigationBarItem(
-                selected = selectedTab == GuardTab.FEED,
-                onClick = { onTabSelected(GuardTab.FEED) },
-                icon = { Icon(Icons.Default.ListAlt, contentDescription = "Live Feed") },
-                label = { Text("Audit Feed", fontSize = 11.sp) },
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = LeashCyan,
-                    selectedTextColor = LeashCyan,
-                    indicatorColor = LeashSurfaceVariant,
-                    unselectedIconColor = LeashTextSecondary,
-                    unselectedTextColor = LeashTextSecondary
-                )
-            )
-
-            NavigationBarItem(
-                selected = selectedTab == GuardTab.SESSION,
-                onClick = { onTabSelected(GuardTab.SESSION) },
-                icon = { Icon(Icons.Default.Memory, contentDescription = "Session") },
-                label = { Text("Session", fontSize = 11.sp) },
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = LeashPurple,
-                    selectedTextColor = LeashPurple,
-                    indicatorColor = LeashSurfaceVariant,
-                    unselectedIconColor = LeashTextSecondary,
-                    unselectedTextColor = LeashTextSecondary
-                )
-            )
-
-            NavigationBarItem(
-                selected = selectedTab == GuardTab.AUDIT,
-                onClick = { onTabSelected(GuardTab.AUDIT) },
-                icon = { Icon(Icons.Default.HistoryEdu, contentDescription = "Audit") },
-                label = { Text("Audit", fontSize = 11.sp) },
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = LeashCyan,
-                    selectedTextColor = LeashCyan,
-                    indicatorColor = LeashSurfaceVariant,
-                    unselectedIconColor = LeashTextSecondary,
-                    unselectedTextColor = LeashTextSecondary
-                )
-            )
-
-            NavigationBarItem(
-                selected = selectedTab == GuardTab.SETTINGS,
-                onClick = { onTabSelected(GuardTab.SETTINGS) },
-                icon = { Icon(Icons.Default.Tune, contentDescription = "Settings") },
-                label = { Text("Policy", fontSize = 11.sp) },
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = LeashPrimary,
-                    selectedTextColor = LeashPrimary,
-                    indicatorColor = LeashSurfaceVariant,
-                    unselectedIconColor = LeashTextSecondary,
-                    unselectedTextColor = LeashTextSecondary
-                )
-            )
-
-            NavigationBarItem(
-                selected = selectedTab == GuardTab.PAIRING,
-                onClick = { onTabSelected(GuardTab.PAIRING) },
-                icon = { Icon(Icons.Default.SettingsEthernet, contentDescription = "Pairing") },
-                label = { Text("Pairing", fontSize = 11.sp) },
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = LeashPrimary,
-                    selectedTextColor = LeashPrimary,
-                    indicatorColor = LeashSurfaceVariant,
-                    unselectedIconColor = LeashTextSecondary,
-                    unselectedTextColor = LeashTextSecondary
-                )
-            )
+        val currentDockIndex = when (selectedTab) {
+            GuardTab.GUARD -> 0
+            GuardTab.SESSION -> 1
+            GuardTab.FEED, GuardTab.AUDIT -> 2
+            GuardTab.SETTINGS, GuardTab.PAIRING -> 3
         }
+
+        GlassFloatingDock(
+            currentTab = currentDockIndex,
+            pendingBadgeCount = pendingCount,
+            onTabSelected = { idx ->
+                val targetTab = when (idx) {
+                    0 -> GuardTab.GUARD
+                    1 -> GuardTab.SESSION
+                    2 -> GuardTab.FEED
+                    3 -> GuardTab.SETTINGS
+                    else -> GuardTab.GUARD
+                }
+                onTabSelected(targetTab)
+            }
+        )
     }
 
     @Composable
@@ -423,7 +416,8 @@ class MainActivity : FragmentActivity() {
         onTimeout: (ActionBundle) -> Unit,
         onDismissBlockedNotice: () -> Unit,
         onViewFeed: () -> Unit,
-        onOpenDemo: () -> Unit
+        onOpenDemo: () -> Unit,
+        onOpenPairing: () -> Unit = {}
     ) {
         var queueIndex by remember { mutableIntStateOf(0) }
 
@@ -472,88 +466,134 @@ class MainActivity : FragmentActivity() {
                     onTimeout = { onTimeout(currentBundle) }
                 )
             } else {
-                // Idle Monitoring Shield
+                // High-End Hero / Standby Screen (Matching Phone 1 in Reference Image)
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(24.dp),
+                        .padding(horizontal = 24.dp)
+                        .padding(top = 10.dp, bottom = 85.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
+                        verticalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier.fillMaxHeight()
                     ) {
-                        Surface(
-                            color = LeashSurfaceVariant,
-                            shape = CircleShape,
-                            border = androidx.compose.foundation.BorderStroke(
-                                2.dp,
-                                if (connectionState == ConnectionState.CONNECTED) LeashPrimary.copy(alpha = 0.6f) else LeashCritical.copy(alpha = 0.6f)
-                            ),
-                            modifier = Modifier.size(110.dp)
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Hero Visual Badge (Representing Hardware Safety Token / Guard Card)
+                        Box(
+                            modifier = Modifier
+                                .size(160.dp),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Box(contentAlignment = Alignment.Center) {
+                            // Ambient Outer Frosted Glow
+                            Box(
+                                modifier = Modifier
+                                    .size(150.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0x24FFFFFF))
+                                    .border(BorderStroke(1.dp, Color(0x38FFFFFF)), CircleShape)
+                            )
+                            // Mid Ring
+                            Box(
+                                modifier = Modifier
+                                    .size(116.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0x38FFFFFF))
+                                    .border(BorderStroke(1.5.dp, Color(0x80FFFFFF)), CircleShape)
+                            )
+                            // Inner Core
+                            Box(
+                                modifier = Modifier
+                                    .size(80.dp)
+                                    .clip(RoundedCornerShape(22.dp))
+                                    .background(
+                                        Brush.linearGradient(
+                                            listOf(
+                                                Color(0xFF1E293B),
+                                                Color(0xFF0F172A)
+                                            )
+                                        )
+                                    )
+                                    .border(BorderStroke(1.5.dp, Color(0x99FFFFFF)), RoundedCornerShape(22.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
                                 Icon(
-                                    imageVector = if (connectionState == ConnectionState.CONNECTED) Icons.Default.Security else Icons.Default.ShieldMoon,
+                                    imageVector = if (connectionState == ConnectionState.CONNECTED) Icons.Default.Shield else Icons.Default.ShieldMoon,
                                     contentDescription = "Shield Active",
                                     tint = if (connectionState == ConnectionState.CONNECTED) LeashPrimary else LeashCritical,
-                                    modifier = Modifier.size(54.dp)
+                                    modifier = Modifier.size(42.dp)
                                 )
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(20.dp))
-
-                        Text(
-                            text = if (connectionState == ConnectionState.CONNECTED) "GUARD ACTIVE & MONITORING" else "FAIL-CLOSED ACTIVE",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.ExtraBold,
-                            color = Color.White,
-                            letterSpacing = 1.sp
-                        )
-
-                        Spacer(modifier = Modifier.height(6.dp))
-
-                        Text(
-                            text = if (connectionState == ConnectionState.CONNECTED)
-                                "Interception link verified. Waiting for agent shell commands or tool actions..."
-                            else
-                                "Disconnected from laptop. Any agent actions are automatically blocked.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = LeashTextSecondary,
-                            modifier = Modifier.padding(horizontal = 32.dp),
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                        )
-
-                        if (sessionContext.tainted) {
-                            Spacer(modifier = Modifier.height(14.dp))
-                            Surface(
-                                color = LeashCritical.copy(alpha = 0.15f),
-                                shape = RoundedCornerShape(8.dp),
-                                border = androidx.compose.foundation.BorderStroke(1.dp, LeashCritical.copy(alpha = 0.5f))
-                            ) {
-                                Text(
-                                    text = "⚠ Session Tainted: Source ${sessionContext.taintSource ?: "README.md"}${sessionContext.taintLine?.let { ":$it" } ?: ""}",
-                                    color = LeashCritical,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                                )
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(28.dp))
-
-                        // Demo sandbox trigger button
-                        OutlinedButton(
-                            onClick = onOpenDemo,
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = LeashCyan),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, LeashCyan.copy(alpha = 0.6f)),
-                            shape = RoundedCornerShape(12.dp)
+                        // Bold Typography matching "Clear Track of Expenses."
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(horizontal = 8.dp)
                         ) {
-                            Icon(Icons.Default.PlayCircle, contentDescription = "Test", modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Trigger Demo Scenario", fontWeight = FontWeight.Bold)
+                            Text(
+                                text = "Clear Control of\nAI Agents.",
+                                fontSize = 32.sp,
+                                fontWeight = FontWeight.Black,
+                                color = Color.White,
+                                lineHeight = 38.sp,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                letterSpacing = (-1).sp
+                            )
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Text(
+                                text = if (connectionState == ConnectionState.CONNECTED)
+                                    "On-device zero-trust bodyguard. All agent shell actions require verified phone clearance."
+                                else
+                                    "Disconnected from laptop. Any agent actions are automatically blocked (Fail-Closed).",
+                                fontSize = 12.sp,
+                                color = Color(0xCCFFFFFF),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                lineHeight = 17.sp,
+                                modifier = Modifier.padding(horizontal = 16.dp)
+                            )
+
+                            if (sessionContext.tainted) {
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Color(0x33EF4444))
+                                        .border(BorderStroke(1.dp, LeashCritical), RoundedCornerShape(10.dp))
+                                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = "⚠ Session Tainted: ${sessionContext.taintSource ?: "README.md"}",
+                                        color = LeashCritical,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                            }
+                        }
+
+                        // Glass Action Buttons matching "Set Up Wallet" and "Sign In Here"
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            GlassPillButton(
+                                text = "Pair Laptop Daemon",
+                                isPrimary = true,
+                                icon = Icons.Default.SettingsEthernet,
+                                onClick = onOpenPairing
+                            )
+
+                            GlassPillButton(
+                                text = "Launch Demo Sandbox",
+                                isPrimary = false,
+                                icon = Icons.Default.PlayCircle,
+                                onClick = onOpenDemo
+                            )
                         }
                     }
                 }

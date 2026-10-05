@@ -1,6 +1,7 @@
 package com.vibesync.leash.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,6 +16,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -23,6 +25,7 @@ import androidx.compose.ui.unit.sp
 import com.vibesync.leash.data.model.AuditFeedItem
 import com.vibesync.leash.data.model.Severity
 import com.vibesync.leash.data.model.Verdict
+import com.vibesync.leash.ui.components.*
 import com.vibesync.leash.ui.theme.*
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -35,91 +38,230 @@ fun ActionFeedScreen(
     modifier: Modifier = Modifier
 ) {
     var selectedFilter by remember { mutableStateOf("ALL") }
+    var searchQuery by remember { mutableStateOf("") }
+    var selectedTimeFilter by remember { mutableStateOf("Today") }
 
-    val filteredItems = remember(feedItems, selectedFilter) {
-        when (selectedFilter) {
-            "ALLOWED" -> feedItems.filter { it.decision.verdict == Verdict.ALLOW }
-            "DENIED" -> feedItems.filter { it.decision.verdict == Verdict.DENY }
-            "CRITICAL" -> feedItems.filter {
-                it.bundle.assessment.severity == Severity.HIGH || it.bundle.assessment.severity == Severity.CRITICAL
+    val filteredItems = remember(feedItems, selectedFilter, searchQuery, selectedTimeFilter) {
+        feedItems.filter { item ->
+            val matchesFilter = when (selectedFilter) {
+                "ALLOWED" -> item.decision.verdict == Verdict.ALLOW
+                "DENIED" -> item.decision.verdict == Verdict.DENY
+                "CRITICAL" -> item.bundle.assessment.severity == Severity.HIGH || item.bundle.assessment.severity == Severity.CRITICAL
+                else -> true
             }
-            else -> feedItems
+            val matchesSearch = if (searchQuery.isBlank()) true else {
+                val q = searchQuery.lowercase()
+                val cmd = (item.bundle.request.command ?: item.bundle.request.target_path ?: "").lowercase()
+                cmd.contains(q) || item.bundle.request.agent.lowercase().contains(q) || item.bundle.assessment.category.lowercase().contains(q)
+            }
+            matchesFilter && matchesSearch
         }
     }
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(LeashDarkBackground)
+            .background(GlassBackgroundGradient)
             .padding(horizontal = 16.dp)
+            .padding(top = 10.dp, bottom = 90.dp)
     ) {
-        // Filter Chips Row
+        // Screen Header matching "All Transaction"
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                .padding(vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            listOf("ALL", "ALLOWED", "DENIED", "CRITICAL").forEach { filterTag ->
-                val isSelected = selectedFilter == filterTag
-                FilterChip(
-                    selected = isSelected,
-                    onClick = { selectedFilter = filterTag },
-                    label = {
+            Box(
+                modifier = Modifier
+                    .size(36.dp)
+                    .clip(CircleShape)
+                    .background(Color(0x2EFFFFFF))
+                    .border(BorderStroke(1.dp, Color(0x4DFFFFFF)), CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    imageVector = Icons.Default.KeyboardArrowLeft,
+                    contentDescription = "Back",
+                    tint = Color.White,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.weight(1f))
+
+            Text(
+                text = "All Activity",
+                fontSize = 16.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.White
+            )
+
+            Spacer(modifier = Modifier.weight(1f))
+
+            Box(modifier = Modifier.size(36.dp)) // balance layout
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
+        // Frosted Search Bar matching the reference UI
+        GlassCard(
+            modifier = Modifier.fillMaxWidth(),
+            cornerRadius = 24.dp,
+            backgroundColor = Color(0x331E293B),
+            borderBrush = GlassCardBorderSubtle
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Search,
+                    contentDescription = "Search",
+                    tint = Color(0xFF94A3B8),
+                    modifier = Modifier.size(18.dp)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+                TextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    placeholder = {
                         Text(
-                            text = filterTag,
-                            fontSize = 11.sp,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
+                            "Search Interceptions...",
+                            color = Color(0xFF94A3B8),
+                            fontSize = 13.sp
                         )
                     },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = LeashSurfaceVariant,
-                        selectedLabelColor = LeashPrimary,
-                        containerColor = LeashSurface,
-                        labelColor = LeashTextSecondary
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        cursorColor = Color.White,
+                        focusedTextColor = Color.White,
+                        unfocusedTextColor = Color.White
                     ),
-                    border = FilterChipDefaults.filterChipBorder(
-                        enabled = true,
-                        selected = isSelected,
-                        borderColor = if (isSelected) LeashPrimary else LeashBorder
-                    )
+                    modifier = Modifier.weight(1f),
+                    singleLine = true
+                )
+                Icon(
+                    imageVector = Icons.Default.CalendarToday,
+                    contentDescription = "Filter Date",
+                    tint = Color(0xFF94A3B8),
+                    modifier = Modifier.size(16.dp)
                 )
             }
         }
 
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // Time Filter Chips matching reference image (Today / Yesterday / This week / This Month)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            listOf("Today", "Yesterday", "This week", "This Month").forEach { filterTag ->
+                val isSelected = selectedTimeFilter == filterTag
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(if (isSelected) Color.White else Color(0x331E293B))
+                        .border(
+                            BorderStroke(1.dp, if (isSelected) Color.White else Color(0x33FFFFFF)),
+                            RoundedCornerShape(16.dp)
+                        )
+                        .clickable { selectedTimeFilter = filterTag }
+                        .padding(vertical = 6.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = filterTag,
+                        fontSize = 10.sp,
+                        fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Medium,
+                        color = if (isSelected) Color(0xFF0F172A) else Color(0xFFCBD5E1),
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        // Secondary Tag Filter (ALL / ALLOWED / DENIED / CRITICAL)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            listOf("ALL", "ALLOWED", "DENIED", "CRITICAL").forEach { filterTag ->
+                val isSelected = selectedFilter == filterTag
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (isSelected) Color(0xFF10B981) else Color(0x331E293B))
+                        .border(
+                            BorderStroke(1.dp, if (isSelected) Color(0xFF10B981) else Color(0x26FFFFFF)),
+                            RoundedCornerShape(10.dp)
+                        )
+                        .clickable { selectedFilter = filterTag }
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = filterTag,
+                        fontSize = 10.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                        color = if (isSelected) Color.White else Color(0xFF94A3B8)
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(12.dp))
+
         if (filteredItems.isEmpty()) {
-            Box(
+            GlassCard(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f),
-                contentAlignment = Alignment.Center
+                cornerRadius = 20.dp,
+                backgroundColor = Color(0x331E293B),
+                borderBrush = GlassCardBorderSubtle
             ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Column(
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
                     Icon(
                         imageVector = Icons.Default.History,
                         contentDescription = "No history",
-                        tint = LeashTextMuted,
-                        modifier = Modifier.size(48.dp)
+                        tint = Color(0x66FFFFFF),
+                        modifier = Modifier.size(44.dp)
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(10.dp))
                     Text(
                         text = "No Interceptions Recorded",
-                        style = MaterialTheme.typography.titleSmall,
-                        color = LeashTextSecondary
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        fontSize = 14.sp
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
-                        text = "Real agent actions will appear here in real time.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = LeashTextMuted
+                        text = "Agent shell and tool actions will appear here in real time.",
+                        fontSize = 11.sp,
+                        color = Color(0x99FFFFFF)
                     )
                 }
             }
         } else {
             LazyColumn(
-                modifier = Modifier.fillMaxWidth().weight(1f),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                contentPadding = PaddingValues(bottom = 16.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(bottom = 12.dp)
             ) {
                 items(filteredItems, key = { it.id }) { item ->
                     FeedItemRow(item = item)
@@ -137,187 +279,68 @@ fun FeedItemRow(item: AuditFeedItem) {
 
     var expanded by remember { mutableStateOf(false) }
 
-    val verdictColor = if (decision.verdict == Verdict.ALLOW) LeashPrimary else LeashCritical
-    val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+    val isAllowed = decision.verdict == Verdict.ALLOW
+    val verdictColor = if (isAllowed) LeashPrimary else LeashCritical
+    val timeFormat = SimpleDateFormat("dd-MM-yy HH:mm", Locale.getDefault())
     val formattedTime = timeFormat.format(Date(item.timestamp))
 
-    Card(
-        shape = RoundedCornerShape(12.dp),
-        colors = CardDefaults.cardColors(containerColor = LeashSurface),
-        border = androidx.compose.foundation.BorderStroke(1.dp, LeashBorder),
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable { expanded = !expanded }
-    ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            // Header Row: Verdict Badge + Severity Badge + Timestamp
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
+    val icon = when {
+        assessment.category.contains("package", ignoreCase = true) -> Icons.Default.Inventory2
+        assessment.category.contains("secret", ignoreCase = true) -> Icons.Default.Lock
+        assessment.category.contains("injection", ignoreCase = true) || assessment.tainted_escalation -> Icons.Default.BugReport
+        else -> Icons.Default.Terminal
+    }
+
+    val cmd = req.command ?: req.target_path ?: req.tool_name ?: "Unknown Action"
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        GlassActivityRow(
+            title = cmd,
+            timestamp = "$formattedTime • ${req.agent} • ${assessment.category}",
+            verdictLabel = if (isAllowed) "SAFE" else "BLOCKED",
+            isBlocked = !isAllowed,
+            icon = icon,
+            badgeColor = verdictColor,
+            onClick = { expanded = !expanded }
+        )
+
+        AnimatedVisibility(visible = expanded) {
+            GlassCard(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 4.dp, vertical = 2.dp),
+                cornerRadius = 14.dp,
+                backgroundColor = Color(0x401E293B),
+                borderBrush = GlassCardBorderSubtle
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Surface(
-                        color = verdictColor.copy(alpha = 0.2f),
-                        shape = RoundedCornerShape(6.dp),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, verdictColor.copy(alpha = 0.5f))
-                    ) {
-                        Text(
-                            text = decision.verdict.name,
-                            color = verdictColor,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 10.sp,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.padding(14.dp)) {
                     Text(
-                        text = assessment.severity.name,
-                        color = when (assessment.severity) {
-                            Severity.CRITICAL, Severity.HIGH -> LeashCritical
-                            Severity.MEDIUM -> LeashWarning
-                            Severity.LOW -> LeashPrimary
-                        },
+                        text = "Risk Summary: ${assessment.summary}",
                         fontWeight = FontWeight.Bold,
+                        color = Color.White,
                         fontSize = 11.sp
-                    )
-                }
-
-                Text(
-                    text = "$formattedTime (${item.latencyMs}ms)",
-                    color = LeashTextMuted,
-                    fontSize = 11.sp,
-                    fontFamily = FontFamily.Monospace
-                )
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Command / Tool Text
-            val cmd = req.command ?: req.target_path ?: req.tool_name ?: "Unknown Action"
-            Text(
-                text = cmd,
-                fontFamily = FontFamily.Monospace,
-                fontSize = 12.sp,
-                color = Color(0xFF80CBC4),
-                maxLines = if (expanded) Int.MAX_VALUE else 2
-            )
-
-            // Taint Pill if applicable
-            if (req.taint.tainted || assessment.tainted_escalation) {
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = "⚠ Tainted from ${req.taint.source ?: "README.md"}${req.taint.line?.let { ":$it" } ?: ""}",
-                    color = LeashCritical,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-            }
-
-            // Expanded Details View
-            AnimatedVisibility(visible = expanded) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 10.dp)
-                        .background(LeashDarkBackground, RoundedCornerShape(8.dp))
-                        .padding(10.dp)
-                ) {
-                    Text(
-                        text = "Decided By: ${decision.by.name}${if (decision.by == com.vibesync.leash.data.model.DecidedBy.TIMEOUT) " (Fail-Closed Default)" else ""}",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = if (decision.by == com.vibesync.leash.data.model.DecidedBy.TIMEOUT) LeashWarning else LeashCyan
-                    )
-                    decision.note?.let {
-                        Text(
-                            text = "Note: $it",
-                            fontSize = 11.sp,
-                            color = LeashTextSecondary
-                        )
-                    }
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "Category: ${assessment.category}",
-                        fontSize = 11.sp,
-                        color = LeashPurple,
-                        fontFamily = FontFamily.Monospace
-                    )
-                    Text(
-                        text = "Agent: ${req.agent} | Worktree: ${req.worktree ?: "default"}",
-                        fontSize = 11.sp,
-                        color = LeashTextSecondary,
-                        fontFamily = FontFamily.Monospace
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
                         text = "Why: ${assessment.why}",
+                        color = Color(0xCCFFFFFF),
                         fontSize = 11.sp,
-                        color = LeashTextSecondary
+                        lineHeight = 16.sp
                     )
-                    if (assessment.safer_alternative.isNotBlank() && assessment.safer_alternative != "None required.") {
+                    assessment.safer_alternative?.takeIf { it.isNotBlank() && it != "None required." }?.let { alt ->
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
-                            text = "Alternative: ${assessment.safer_alternative}",
-                            fontSize = 11.sp,
-                            color = LeashCyan
+                            text = "Safer Alternative: $alt",
+                            color = LeashCyan,
+                            fontSize = 10.sp
                         )
                     }
-
-                    // Execution Result details
-                    item.executionResult?.let { exec ->
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Surface(
-                            color = if (exec.allowed) LeashSurfaceVariant else LeashCritical.copy(alpha = 0.1f),
-                            shape = RoundedCornerShape(6.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(modifier = Modifier.padding(8.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(
-                                        text = if (exec.allowed) "EXECUTION: SUCCESS (Exit ${exec.exit_code})" else "EXECUTION: BLOCKED",
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (exec.allowed) LeashPrimary else LeashCritical
-                                    )
-                                    Text(
-                                        text = "${exec.duration_ms.toInt()}ms",
-                                        fontSize = 10.sp,
-                                        color = LeashTextMuted,
-                                        fontFamily = FontFamily.Monospace
-                                    )
-                                }
-                                exec.blocked_reason?.let { reason ->
-                                    Spacer(modifier = Modifier.height(2.dp))
-                                    Text(
-                                        text = "Reason: $reason",
-                                        fontSize = 11.sp,
-                                        color = LeashCritical
-                                    )
-                                }
-                                exec.stdout_snippet?.takeIf { it.isNotBlank() }?.let { snippet ->
-                                    Spacer(modifier = Modifier.height(2.dp))
-                                    Text(
-                                        text = "Output: $snippet",
-                                        fontSize = 10.sp,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = LeashTextSecondary,
-                                        maxLines = 3
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(4.dp))
+                    Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = "Action ID: ${req.id}",
-                        fontSize = 10.sp,
+                        text = "Action ID: ${req.id} • Latency: ${item.latencyMs}ms • By: ${decision.by.name}",
                         fontFamily = FontFamily.Monospace,
-                        color = LeashTextMuted
+                        fontSize = 9.sp,
+                        color = Color(0x80FFFFFF)
                     )
                 }
             }

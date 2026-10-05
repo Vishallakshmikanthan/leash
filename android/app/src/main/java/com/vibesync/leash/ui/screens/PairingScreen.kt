@@ -21,6 +21,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vibesync.leash.data.model.ConnectionState
+import com.vibesync.leash.ui.components.GlassCard
 import com.vibesync.leash.ui.theme.*
 
 @Composable
@@ -31,20 +32,24 @@ fun PairingScreen(
     connectionState: ConnectionState,
     onSavePairing: (String, Int, String) -> Unit,
     onDisconnect: () -> Unit,
+    onPairWithPin: ((String, Int, String, (Boolean, String?) -> Unit) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
     var host by remember(currentHost) { mutableStateOf(currentHost) }
     var portStr by remember(currentPort) { mutableStateOf(currentPort.toString()) }
     var secret by remember(currentSecret) { mutableStateOf(currentSecret) }
-    var qrUriInput by remember { mutableStateOf("") }
-    var showQrInput by remember { mutableStateOf(false) }
+    var pinCode by remember { mutableStateOf("") }
+    var isVerifyingPin by remember { mutableStateOf(false) }
+    var pinError by remember { mutableStateOf<String?>(null) }
+    var pinSuccessMessage by remember { mutableStateOf<String?>(null) }
 
     Column(
         modifier = modifier
             .fillMaxSize()
-            .background(LeashDarkBackground)
+            .background(GlassBackgroundGradient)
             .padding(16.dp)
+            .padding(bottom = 85.dp)
             .verticalScroll(rememberScrollState())
     ) {
         // Connection Status Banner
@@ -76,11 +81,11 @@ fun PairingScreen(
             )
         }
 
-        Card(
-            shape = RoundedCornerShape(16.dp),
-            colors = CardDefaults.cardColors(containerColor = LeashSurface),
-            border = androidx.compose.foundation.BorderStroke(1.dp, statusColor.copy(alpha = 0.6f)),
-            modifier = Modifier.fillMaxWidth()
+        GlassCard(
+            modifier = Modifier.fillMaxWidth(),
+            cornerRadius = 20.dp,
+            backgroundColor = Color(0x38FFFFFF),
+            borderBrush = GlassCardBorderSubtle
         ) {
             Row(
                 modifier = Modifier.padding(16.dp),
@@ -110,9 +115,123 @@ fun PairingScreen(
             }
         }
 
+        Spacer(modifier = Modifier.height(18.dp))
+
+        // 1-Click Quick PIN Pairing Card
+        Card(
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = LeashSurface),
+            border = androidx.compose.foundation.BorderStroke(1.5.dp, LeashCyan),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(18.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.VpnKey,
+                        contentDescription = "PIN",
+                        tint = LeashCyan,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "QUICK WEB PORTAL PIN PAIRING",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = LeashCyan,
+                        letterSpacing = 1.sp
+                    )
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(
+                    text = "Open http://localhost:8765 on your laptop to view your 6-digit code.",
+                    fontSize = 12.sp,
+                    color = LeashTextSecondary
+                )
+                Spacer(modifier = Modifier.height(14.dp))
+
+                OutlinedTextField(
+                    value = pinCode,
+                    onValueChange = { input ->
+                        val digits = input.filter { it.isDigit() }
+                        if (digits.length <= 6) {
+                            pinCode = digits
+                            pinError = null
+                        }
+                    },
+                    label = { Text("6-Digit Pairing PIN") },
+                    placeholder = { Text("e.g. 482913") },
+                    leadingIcon = { Icon(Icons.Default.Pin, contentDescription = "PIN") },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = LeashCyan,
+                        unfocusedBorderColor = LeashBorder,
+                        focusedTextColor = LeashTextPrimary,
+                        unfocusedTextColor = LeashTextPrimary
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                if (pinError != null) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(text = pinError!!, color = LeashCritical, fontSize = 12.sp)
+                }
+                if (pinSuccessMessage != null) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(text = pinSuccessMessage!!, color = LeashPrimary, fontSize = 12.sp)
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Button(
+                    onClick = {
+                        val parsedPort = portStr.toIntOrNull() ?: 8765
+                        if (pinCode.length != 6) {
+                            pinError = "Please enter all 6 digits"
+                            return@Button
+                        }
+                        pinError = null
+                        pinSuccessMessage = null
+                        isVerifyingPin = true
+                        onPairWithPin?.invoke(host, parsedPort, pinCode) { success, error ->
+                            isVerifyingPin = false
+                            if (success) {
+                                pinSuccessMessage = "Authenticated! Connected to laptop."
+                                Toast.makeText(context, "Pairing successful! Link secure.", Toast.LENGTH_SHORT).show()
+                            } else {
+                                pinError = error ?: "PIN verification failed"
+                            }
+                        }
+                    },
+                    enabled = !isVerifyingPin && pinCode.length == 6,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = LeashCyan,
+                        contentColor = Color.Black
+                    )
+                ) {
+                    if (isVerifyingPin) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            color = Color.Black,
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Verifying PIN with Laptop...")
+                    } else {
+                        Icon(Icons.Default.CheckCircle, contentDescription = "Verify")
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Verify PIN & Connect Link", fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+
         Spacer(modifier = Modifier.height(20.dp))
 
-        // Device Pairing Form Card
+        // Advanced / Manual Credentials Card
         Card(
             shape = RoundedCornerShape(16.dp),
             colors = CardDefaults.cardColors(containerColor = LeashSurface),
@@ -121,10 +240,10 @@ fun PairingScreen(
         ) {
             Column(modifier = Modifier.padding(18.dp)) {
                 Text(
-                    text = "LAPTOP DAEMON LINK",
+                    text = "ADVANCED / MANUAL DAEMON CONFIG",
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
-                    color = LeashCyan,
+                    color = LeashPurple,
                     letterSpacing = 1.sp
                 )
                 Spacer(modifier = Modifier.height(14.dp))

@@ -17,6 +17,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.*
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
@@ -130,6 +132,63 @@ class LeashWebSocketClient(
             Log.e("LeashClient", "Error parsing pairing URI: $uriString", e)
         }
         return false
+    }
+
+    fun pairWithPin(
+        targetHost: String,
+        targetPort: Int,
+        pin: String,
+        onResult: (Boolean, String?) -> Unit
+    ) {
+        scope.launch {
+            try {
+                val cleanHost = targetHost.trim().ifEmpty { "127.0.0.1" }
+                val cleanPin = pin.trim().replace("-", "").replace(" ", "")
+                val url = "http://$cleanHost:$targetPort/api/pair/pin/verify"
+                val jsonPayload = """{"pin":"$cleanPin","device_name":"$deviceName","device_id":"$deviceId"}"""
+                val mediaType = "application/json; charset=utf-8".toMediaType()
+                val body = jsonPayload.toRequestBody(mediaType)
+                val request = Request.Builder()
+                    .url(url)
+                    .post(body)
+                    .build()
+
+                val response = client.newCall(request).execute()
+                val bodyStr = response.body?.string() ?: ""
+
+                if (!response.isSuccessful) {
+                    val errMsg = try {
+                        val parsed = json.parseToJsonElement(bodyStr).jsonObject
+                        parsed["error"]?.jsonPrimitive?.content ?: "Verification failed (${response.code})"
+                    } catch (e: Exception) {
+                        "Verification failed (${response.code})"
+                    }
+                    withContext(Dispatchers.Main) {
+                        onResult(false, errMsg)
+                    }
+                    return@launch
+                }
+
+                val parsed = json.parseToJsonElement(bodyStr).jsonObject
+                val secret = parsed["shared_secret"]?.jsonPrimitive?.content
+                if (secret.isNullOrBlank()) {
+                    withContext(Dispatchers.Main) {
+                        onResult(false, "Shared secret missing in response")
+                    }
+                    return@launch
+                }
+
+                withContext(Dispatchers.Main) {
+                    updatePairing(cleanHost, targetPort, secret)
+                    onResult(true, null)
+                }
+            } catch (e: Exception) {
+                Log.e("LeashClient", "Error during PIN pairing", e)
+                withContext(Dispatchers.Main) {
+                    onResult(false, e.localizedMessage ?: "Connection error")
+                }
+            }
+        }
     }
 
     fun connect() {
