@@ -14,7 +14,7 @@ class WorkflowWatchlistGate(BaseGate):
     """Flags edits or writes to sensitive configuration files like GitHub Actions or Dockerfiles."""
 
     SENSITIVE_FILES_PATTERN = re.compile(
-        r"(\.github/workflows/.*\.ya?ml|Dockerfile.*|docker-compose.*\.ya?ml|package\.json|package-lock\.json|Cargo\.lock|requirements\.txt)",
+        r"(\.github/workflows/.*|Dockerfile.*|docker-compose.*\.ya?ml|package\.json|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|poetry\.lock|requirements\.txt|pyproject\.toml|Makefile|\.npmrc|\.yarnrc|leash\.ya?ml)",
         re.IGNORECASE,
     )
 

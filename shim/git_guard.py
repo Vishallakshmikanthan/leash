@@ -37,8 +37,8 @@ class GitGuard:
         if subcommand == "push":
             has_force = any(arg in self.FORCE_FLAGS for arg in git_args[1:])
             if has_force:
-                return True, Severity.HIGH, "Force push detected. Can overwrite shared remote history."
-            return True, Severity.MEDIUM, "Git push to remote repository."
+                return True, Severity.CRITICAL, "Force push detected. Can overwrite shared remote history."
+            return True, Severity.HIGH, "Git push to remote repository."
 
         # 2. Hard reset or destructive clean
         if subcommand == "reset" and any(arg in ("--hard", "--merge") for arg in git_args[1:]):
@@ -49,7 +49,13 @@ class GitGuard:
 
         # 3. Branch deletion
         if subcommand == "branch" and any(arg in ("-D", "--delete") for arg in git_args[1:]):
-            return True, Severity.MEDIUM, "Git branch force deletion."
+            return True, Severity.HIGH, "Git branch force deletion."
+
+        # 3b. Checkout/switch to base branch protection (M7.3)
+        if subcommand in ("checkout", "switch"):
+            target_branch = next((arg for arg in git_args[1:] if not arg.startswith("-")), "")
+            if target_branch in ("main", "master", "develop", "dev", "trunk"):
+                return True, Severity.HIGH, f"Blocked switch/checkout to protected base branch '{target_branch}'. Agent must remain in session branch."
 
         # 4. Commit secret check
         if subcommand == "commit":

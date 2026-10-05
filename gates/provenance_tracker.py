@@ -59,6 +59,8 @@ class ProvenanceTracker:
         "cache",
         "fetched",
         "tmp/web",
+        "docs",
+        "issues",
     }
 
     INJECTION_PATTERNS: List[Tuple[re.Pattern, str]] = [
@@ -386,6 +388,11 @@ class ProvenanceTracker:
                             if any(arg.lower().startswith(pfx) for pfx in ("http://", "https://", "ftp://")):
                                 flags = ["web-derived", "untrusted-doc"]
                                 return (arg, 1, flags, f"Web download via {exe}: {arg}")
+
+                    # GitHub CLI issue/pr/comment reads
+                    if exe == "gh" and any(sub in stage.args for sub in ("issue", "pr", "api")):
+                        cmd_desc = f"gh {' '.join(stage.args)}"
+                        return (cmd_desc, 1, ["gh-derived", "untrusted-doc"], f"GitHub API read via {cmd_desc}")
 
         return None
 

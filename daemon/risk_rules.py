@@ -72,35 +72,37 @@ class RemoteScriptExecutionRule(BaseRule):
         if request.kind != ActionKind.SHELL and not request.command:
             return None
 
-        # 1. Pipeline check: curl ... | sh
+        # 1. Pipeline check: curl ... | sh, base64 -d | sh, printf ... | sh
         for pipeline in parsed_shell.pipelines:
             if pipeline.is_piped:
-                for idx in range(len(pipeline.stages) - 1):
-                    upstream = pipeline.stages[idx]
-                    downstream = pipeline.stages[idx + 1]
+                last_stage = pipeline.stages[-1]
+                last_exe = last_stage.canonical_executable
+                if last_exe in SCRIPT_INTERPRETERS or last_stage.has_flag("-c"):
+                    for prev_stage in pipeline.stages[:-1]:
+                        prev_exe = prev_stage.canonical_executable
+                        if (
+                            prev_exe in DOWNLOAD_TOOLS
+                            or prev_exe in ("base64", "xxd", "uudecode", "printf")
+                            or "base64" in prev_stage.raw
+                        ):
+                            return RuleMatch(
+                                rule_id="R-NET-PIPE-EXEC",
+                                category=self.category,
+                                severity=Severity.HIGH,
+                                summary=f"Piping downloaded or decoded payload ({prev_exe}) directly into interpreter ({last_exe}).",
+                                why="Executing uninspected remote or encoded scripts can run arbitrary malicious code without verification.",
+                                safer_alternative="Inspect script content before executing explicitly.",
+                                details={"fetcher": prev_exe, "interpreter": last_exe},
+                            )
 
-                    up_exe = upstream.canonical_executable
-                    down_exe = downstream.canonical_executable
-
-                    if up_exe in DOWNLOAD_TOOLS and (down_exe in SCRIPT_INTERPRETERS or downstream.has_flag("-c")):
-                        return RuleMatch(
-                            rule_id="R-NET-PIPE-EXEC",
-                            category=self.category,
-                            severity=Severity.HIGH,
-                            summary=f"Piping remote content from {up_exe} directly into {down_exe}.",
-                            why="Executing uninspected remote scripts can run arbitrary malicious code without verification.",
-                            safer_alternative=f"Download script with {up_exe} to a file, inspect it, then execute.",
-                            details={"fetcher": up_exe, "interpreter": down_exe},
-                        )
-
-        # 2. Subshell check: sh -c "$(curl ...)" or eval $(wget ...)
+        # 2. Subshell check: sh -c "$(curl ...)" or eval "$(curl ...)"
         if parsed_shell.has_subshell:
             for sub_cmd in parsed_shell.subshell_commands:
                 sub_lower = sub_cmd.lower()
                 for tool in DOWNLOAD_TOOLS:
                     if tool in sub_lower:
                         return RuleMatch(
-                            rule_id="R-NET-SUB-EXEC",
+                            rule_id="R-NET-PIPE-EXEC",
                             category=self.category,
                             severity=Severity.HIGH,
                             summary=f"Subshell execution evaluates downloaded payload from {tool}.",
@@ -673,8 +675,9 @@ class OutboundDataTransferRule(BaseRule):
             if exe == "wget":
                 post_opts = cmd.get_option_values("--post-file")
                 if post_opts or any("--post-file" in f for f in cmd.flags):
+                    is_secret = any(s in cmd.raw.lower() for s in (".env", "id_rsa", "credentials", "shadow", "key"))
                     return RuleMatch(
-                        rule_id="R-NET-EXFIL",
+                        rule_id="R-NET-EXFIL-SECRET" if is_secret else "R-NET-EXFIL",
                         category=self.category,
                         severity=Severity.HIGH,
                         summary=f"Outbound file transmission via wget: {cmd.raw}",
@@ -703,8 +706,9 @@ class OutboundDataTransferRule(BaseRule):
                 is_piped_in = cmd.pipeline_index > 0
 
                 if has_input_redir or is_piped_in:
+                    is_secret = any(s in cmd.raw.lower() for s in (".env", "id_rsa", "credentials", "shadow", "key"))
                     return RuleMatch(
-                        rule_id="R-NET-EXFIL",
+                        rule_id="R-NET-EXFIL-SECRET" if is_secret else "R-NET-EXFIL",
                         category=self.category,
                         severity=Severity.HIGH,
                         summary=f"Data exfiltration via raw network socket ({exe}).",

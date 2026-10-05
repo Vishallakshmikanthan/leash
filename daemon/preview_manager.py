@@ -79,19 +79,67 @@ class ScriptPreviewManager:
         return None
 
     @classmethod
+    def validate_target_url(cls, url: str) -> Optional[str]:
+        """Validates that a URL does not target private or loopback addresses (M6.4)."""
+        import ipaddress
+        import socket
+        import urllib.parse
+
+        parsed = urllib.parse.urlparse(url)
+        hostname = parsed.hostname
+        if not hostname:
+            return "Invalid URL: missing hostname"
+
+        if hostname.lower() in ("localhost", "127.0.0.1", "::1"):
+            return "Access blocked: target is loopback address (refused)"
+
+        try:
+            addrinfo = socket.getaddrinfo(hostname, None)
+            for family, _, _, _, sockaddr in addrinfo:
+                ip_str = sockaddr[0]
+                ip = ipaddress.ip_address(ip_str)
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                    return f"Access blocked: resolved IP {ip_str} is a private/loopback/internal address (refused)"
+        except Exception as e:
+            return f"DNS resolution failed: {e}"
+        return None
+
+    @classmethod
     def fetch_or_read_content(
         cls, target: str, base_dir: Optional[str] = None
     ) -> tuple[Optional[str], bool, Optional[str]]:
-        """Reads local file or downloads remote script content safely with timeout and byte cap."""
+        """Reads local file or downloads remote script content safely with timeout, byte cap, and SSRF checks."""
+        import urllib.parse
         is_remote = target.startswith("http://") or target.startswith("https://")
 
         if is_remote:
+            validation_error = cls.validate_target_url(target)
+            if validation_error:
+                return None, True, validation_error
+
+            current_url = target
+            redirect_count = 0
+            max_redirects = 3
+
+            class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+                def redirect_request(self, req, fp, code, msg, headers, newurl):
+                    nonlocal redirect_count, current_url
+                    redirect_count += 1
+                    if redirect_count > max_redirects:
+                        raise urllib.error.HTTPError(req.full_url, code, "Exceeded maximum redirect limit (3)", headers, fp)
+                    err = ScriptPreviewManager.validate_target_url(newurl)
+                    if err:
+                        raise urllib.error.HTTPError(newurl, code, f"Redirect target refused: {err}", headers, fp)
+                    current_url = newurl
+                    return super().redirect_request(req, fp, code, msg, headers, newurl)
+
             try:
+                opener = urllib.request.build_opener(SafeRedirectHandler)
                 req = urllib.request.Request(
                     target,
                     headers={"User-Agent": "Leash-Script-Preview/1.0"}
                 )
-                with urllib.request.urlopen(req, timeout=cls.FETCH_TIMEOUT_SECONDS) as resp:
+                with opener.open(req, timeout=cls.FETCH_TIMEOUT_SECONDS) as resp:
                     raw_bytes = resp.read(cls.MAX_FETCH_BYTES)
                     text = raw_bytes.decode("utf-8", errors="replace")
                     return text, True, None

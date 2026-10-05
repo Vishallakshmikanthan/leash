@@ -52,6 +52,24 @@ class CommandSegment:
             exe = exe[:-4]
         return exe
 
+    @property
+    def is_opaque(self) -> bool:
+        """Identifies opaque execution forms that obscure commands from policy validation."""
+        exe = self.canonical_executable
+        if exe in ("eval", "source", "."):
+            return True
+        if "$" in self.executable:
+            return True
+        if exe in SHELL_INTERPRETERS and self.has_flag("-c"):
+            return True
+        if exe == "find" and (self.has_flag("-exec", "-execdir") or any(a in ("-exec", "-execdir") for a in self.args)):
+            return True
+        if exe == "xargs" and any(s in self.args for s in SHELL_INTERPRETERS):
+            return True
+        if any(r[0] == "<<" for r in self.redirections):
+            return True
+        return False
+
     def has_flag(self, *flag_names: str) -> bool:
         """Checks if any of the given flag names are present (e.g. '-f', '--force')."""
         for f in flag_names:
@@ -78,6 +96,10 @@ class Pipeline:
         return len(self.stages) > 1
 
 
+READER_COMMANDS = {"cat", "tar", "find", "dd", "gzip", "head", "tail", "grep", "awk", "sed", "dump"}
+NETWORK_COMMANDS = {"ssh", "scp", "sftp", "curl", "wget", "nc", "netcat", "rsync", "socat", "ftp", "telnet"}
+
+
 @dataclass
 class ParsedShell:
     """Root structure representing a fully parsed shell command line."""
@@ -98,6 +120,27 @@ class ParsedShell:
                     result.append(curr)
                     curr = curr.subcommand
         return result
+
+    @property
+    def has_opaque_command(self) -> bool:
+        """Returns True if any segment or subshell uses opaque shell execution forms."""
+        if self.has_subshell:
+            return True
+        return any(c.is_opaque for c in self.all_commands())
+
+    @property
+    def has_reader_to_network_pipe(self) -> bool:
+        """Detects pipes from local reading commands directly into network tools (e.g. tar | ssh, cat | nc)."""
+        for pipe in self.pipelines:
+            if len(pipe.stages) > 1:
+                has_reader = False
+                for stage in pipe.stages:
+                    exe = stage.canonical_executable
+                    if exe in READER_COMMANDS:
+                        has_reader = True
+                    elif has_reader and exe in NETWORK_COMMANDS:
+                        return True
+        return False
 
 
 class ShellParser:
@@ -142,6 +185,18 @@ class ShellParser:
 
             if in_single or in_double:
                 res.append(ch)
+                i += 1
+                continue
+
+            # Treat newlines outside quotes as command sequence separators
+            if ch in ("\n", "\r"):
+                res.extend([" ; "])
+                i += 1
+                continue
+
+            # Delimit subshell parenthesis
+            if ch in ("(", ")"):
+                res.extend([" ", ch, " "])
                 i += 1
                 continue
 

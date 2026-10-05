@@ -59,8 +59,17 @@ class WorktreeManager:
             return False
 
     def get_worktree_path(self, session_id: str) -> Path:
-        """Returns the canonical worktree directory path for a session."""
-        return self.repo_root / ".leash" / "worktrees" / session_id
+        """Returns the canonical worktree directory path for a session located outside the repo."""
+        import hashlib
+        from daemon.paths import leash_home
+
+        # Check for legacy path first for backwards compatibility
+        legacy_path = self.repo_root / ".leash" / "worktrees" / session_id
+        if legacy_path.exists():
+            return legacy_path
+
+        repo_hash = hashlib.sha256(str(self.repo_root).encode("utf-8")).hexdigest()[:12]
+        return leash_home() / "worktrees" / repo_hash / session_id
 
     def get_branch_name(self, session_id: str) -> str:
         """Returns the canonical git branch name for a session."""

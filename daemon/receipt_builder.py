@@ -289,6 +289,11 @@ class ReceiptBuilder:
         branch_name: Optional[str] = None,
         agent_name: Optional[str] = None,
         task_description: Optional[str] = None,
+        chain_head: Optional[str] = None,
+        record_count: Optional[int] = None,
+        protection_level: Optional[str] = None,
+        disabled_settings: Optional[List[str]] = None,
+        audit_key: Optional[bytes] = None,
     ) -> str:
         """Generates a clear, PR-ready Markdown Agent Receipt."""
         # 1. Resolve metadata from session_scope if provided
@@ -478,10 +483,68 @@ class ReceiptBuilder:
             lines.append("- [ ] Note: Session was tainted; review changes for indirect prompt injection.")
         lines.append("- [ ] Confirm no secrets, canaries, or keys are committed to the PR diff.\n")
 
+        # Cryptographic Verification Section
+        head_str = chain_head
+        if not head_str:
+            for ev in reversed(events):
+                if ev.get("mac"):
+                    head_str = ev["mac"]
+                    break
+        head_str = head_str or ("0" * 64)
+        rec_count = record_count if record_count is not None else len(events)
+        prot_str = protection_level or scope_dict.get("protection_level") or "L1 (Cooperative)"
+        disabled_str = ", ".join(disabled_settings) if disabled_settings else "None (All guards active)"
+
+        lines.append("## 🔒 Cryptographic Verification\n")
+        lines.append(f"- **Audit Chain Head:** `{head_str}`")
+        lines.append(f"- **Audit Record Count:** `{rec_count}`")
+        lines.append(f"- **Protection Level:** `{prot_str}`")
+        lines.append(f"- **Disabled Protections:** `{disabled_str}`")
+
+        if audit_key:
+            import hashlib
+            import hmac
+            base_text = "\n".join(lines)
+            sig = hmac.new(audit_key, base_text.encode("utf-8"), hashlib.sha256).hexdigest()
+            lines.append(f"- **Receipt Signature:** `{sig}`")
+
         # Footer
-        lines.append("---\n*Verified by **Leash** on-device AI safety layer. Zero cloud telemetry. PR-ready receipt.*")
+        lines.append("\n---\n*Verified by **Leash** on-device AI safety layer. Zero cloud telemetry. PR-ready receipt.*")
 
         return "\n".join(lines)
+
+    @classmethod
+    def verify_receipt(
+        cls,
+        receipt: Any,
+        audit_key: bytes,
+    ) -> Dict[str, Any]:
+        """
+        Verifies the cryptographic HMAC signature of an agent receipt.
+        """
+        if isinstance(receipt, Path) or (isinstance(receipt, str) and "\n" not in receipt and Path(receipt).exists()):
+            with open(receipt, "r", encoding="utf-8") as f:
+                content = f.read()
+        else:
+            content = str(receipt)
+
+        sig_match = re.search(r"-\s*\*\*Receipt Signature:\*\*\s*`([a-f0-9]{64})`", content)
+        if not sig_match:
+            return {"valid": False, "error": "Receipt missing cryptographic signature field"}
+
+        claimed_sig = sig_match.group(1)
+        sig_line_start = content.rfind("- **Receipt Signature:**")
+        if sig_line_start == -1:
+            return {"valid": False, "error": "Cannot locate signature line boundary"}
+
+        body_to_verify = content[:sig_line_start].rstrip()
+        import hashlib
+        import hmac
+        expected_sig = hmac.new(audit_key, body_to_verify.encode("utf-8"), hashlib.sha256).hexdigest()
+
+        if hmac.compare_digest(claimed_sig, expected_sig):
+            return {"valid": True, "signature": claimed_sig, "error": None}
+        return {"valid": False, "signature": claimed_sig, "expected": expected_sig, "error": "Receipt signature mismatch"}
 
     @classmethod
     def save_receipt(

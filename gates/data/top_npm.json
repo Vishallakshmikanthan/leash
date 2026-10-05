@@ -1,0 +1,12 @@
+[
+  "lodash", "chalk", "react", "react-dom", "express", "tslib", "commander", "axios",
+  "debug", "async", "typescript", "glob", "uuid", "semver", "mkdirp", "fs-extra",
+  "inquirer", "yargs", "body-parser", "rxjs", "moment", "webpack", "babel-core",
+  "core-js", "dotenv", "colors", "postcss", "eslint", "prettier", "jest", "mocha",
+  "rimraf", "bluebird", "minimist", "request", "through2", "path", "url", "chokidar",
+  "cookie-parser", "jsonwebtoken", "mongoose", "socket.io", "cors", "multer",
+  "nodemon", "next", "vue", "vite", "esbuild", "tailwindcss", "autoprefixer",
+  "strip-ansi", "string-width", "wrap-ansi", "ansi-styles", "has-flag", "supports-color",
+  "ms", "source-map", "ws", "readable-stream", "safe-buffer", "inherits", "util-deprecate",
+  "brace-expansion", "balanced-match", "concat-map", "once", "wrappy", "inflight"
+]

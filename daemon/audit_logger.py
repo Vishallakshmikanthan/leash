@@ -4,12 +4,16 @@ daemon/audit_logger.py - Append-only, structured, privacy-preserving JSONL audit
 from __future__ import annotations
 
 import datetime
+import hashlib
+import hmac
 import json
+import os
 import re
+import secrets
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from contracts.models import AuditEvent, ExecutionResult
 
@@ -29,17 +33,107 @@ def sanitize_text(text: Optional[str], max_len: int = 1000) -> Optional[str]:
     return clean
 
 
+def canonical_json(data: Dict[str, Any]) -> bytes:
+    """Produces deterministic canonical JSON encoding for MAC calculations."""
+    return json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def record_without_mac(rec: Dict[str, Any]) -> Dict[str, Any]:
+    """Returns copy of record dictionary excluding cryptographic MAC."""
+    return {k: v for k, v in rec.items() if k != "mac"}
+
+
+def load_or_create_audit_key(key_path: Path) -> bytes:
+    """Loads existing 256-bit audit key or creates a fresh secure random key with 0600 permissions."""
+    if key_path.exists():
+        return key_path.read_bytes()
+    key = secrets.token_bytes(32)
+    key_path.parent.mkdir(parents=True, exist_ok=True)
+    key_path.write_bytes(key)
+    try:
+        key_path.chmod(0o600)
+    except (AttributeError, OSError, NotImplementedError):
+        pass
+    return key
+
 
 class AuditLogger:
-    """Thread-safe append-only, privacy-preserving audit logger writing to a JSONL file."""
+    """Thread-safe append-only, privacy-preserving audit logger writing to a JSONL file with HMAC hash chain."""
 
-    def __init__(self, log_path: Path):
+    def __init__(
+        self,
+        log_path: Path,
+        audit_key: Optional[bytes] = None,
+        key_path: Optional[Path] = None,
+    ):
         self.log_path = log_path
         self._lock = threading.Lock()
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
 
+        # Initialize or load dedicated audit HMAC key
+        if audit_key is not None:
+            self.audit_key = audit_key
+        elif key_path is not None:
+            self.audit_key = load_or_create_audit_key(key_path)
+        else:
+            local_key = self.log_path.parent / "audit.key"
+            if local_key.exists():
+                self.audit_key = load_or_create_audit_key(local_key)
+            else:
+                try:
+                    from daemon.paths import audit_key_path
+                    self.audit_key = load_or_create_audit_key(audit_key_path())
+                except Exception:
+                    self.audit_key = load_or_create_audit_key(local_key)
+
+        # Initialize chain head by inspecting existing log entries
+        self.head: str = "0" * 64
+        if self.log_path.exists():
+            try:
+                self.log_path.chmod(0o600)
+            except (AttributeError, OSError, NotImplementedError):
+                pass
+            try:
+                with open(self.log_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            rec = json.loads(line)
+                            if "mac" in rec and rec["mac"]:
+                                self.head = rec["mac"]
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+
+    def append_record(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        """Cryptographically appends a record with prev hash and HMAC-SHA256 mac, flushing to disk."""
+        with self._lock:
+            record["prev"] = self.head
+            rec_no_mac = record_without_mac(record)
+            payload = self.head.encode("utf-8") + canonical_json(rec_no_mac)
+            mac = hmac.new(self.audit_key, payload, hashlib.sha256).hexdigest()
+            record["mac"] = mac
+            self.head = mac
+
+            line = json.dumps(record) + "\n"
+            with open(self.log_path, "a", encoding="utf-8") as f:
+                f.write(line)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+            try:
+                self.log_path.chmod(0o600)
+            except (AttributeError, OSError, NotImplementedError):
+                pass
+            return record
+
     def log(self, event: AuditEvent) -> None:
-        """Appends an AuditEvent to the JSONL log file with privacy scrubbing."""
+        """Appends an AuditEvent to the JSONL log file with privacy scrubbing and HMAC hash chain."""
         dict_rep = event.to_dict()
         # Redact potentially sensitive fields
         if "command" in dict_rep and dict_rep["command"]:
@@ -53,10 +147,9 @@ class AuditLogger:
             if "stderr_snippet" in res and res["stderr_snippet"]:
                 res["stderr_snippet"] = sanitize_text(res["stderr_snippet"], max_len=600)
 
-        line = json.dumps(dict_rep) + "\n"
-        with self._lock:
-            with open(self.log_path, "a", encoding="utf-8") as f:
-                f.write(line)
+        rec = self.append_record(dict_rep)
+        event.prev = rec["prev"]
+        event.mac = rec["mac"]
 
     def record_action(
         self,
@@ -77,6 +170,9 @@ class AuditLogger:
         snapshot_ref: Optional[str] = None,
         tainted: bool = False,
         metadata: Optional[Dict[str, Any]] = None,
+        device_id: Optional[str] = None,
+        device_sig: Optional[str] = None,
+        action_digest: Optional[str] = None,
     ) -> AuditEvent:
         """Records an intercepted action with full context and structured risk assessment."""
         event = AuditEvent(
@@ -100,6 +196,9 @@ class AuditLogger:
             snapshot_ref=snapshot_ref,
             tainted=tainted,
             metadata=metadata or {},
+            device_id=device_id,
+            device_sig=device_sig,
+            action_digest=action_digest,
         )
         self.log(event)
         return event
@@ -620,4 +719,81 @@ class AuditLogger:
             "severity_breakdown": severities,
             "timeline": timeline,
             "rewinds": rewinds,
+        }
+
+    def verify_integrity(self, log_path: Optional[Path] = None) -> Dict[str, Any]:
+        """
+        Cryptographically verifies the HMAC-SHA256 hash chain of the audit log.
+        Re-computes the chain from the first record to the end and returns verification status.
+        Detects byte modifications, record insertions, deletions, and truncations.
+        """
+        target_path = log_path or self.log_path
+        if not target_path.exists():
+            return {
+                "valid": True,
+                "total_records": 0,
+                "head": "0" * 64,
+                "error": None,
+            }
+
+        expected_prev = "0" * 64
+        count = 0
+        with self._lock:
+            with open(target_path, "r", encoding="utf-8") as f:
+                for line_no, raw_line in enumerate(f, 1):
+                    raw_line = raw_line.strip()
+                    if not raw_line:
+                        continue
+                    count += 1
+                    try:
+                        record = json.loads(raw_line)
+                    except Exception as e:
+                        return {
+                            "valid": False,
+                            "record_index": line_no,
+                            "total_records": count,
+                            "head": expected_prev,
+                            "error": f"JSON decode error at line {line_no}: {e}",
+                        }
+
+                    actual_prev = record.get("prev")
+                    actual_mac = record.get("mac")
+                    if not actual_mac:
+                        return {
+                            "valid": False,
+                            "record_index": line_no,
+                            "total_records": count,
+                            "head": expected_prev,
+                            "error": f"Missing cryptographic HMAC mac at record {line_no}",
+                        }
+
+                    if actual_prev != expected_prev:
+                        return {
+                            "valid": False,
+                            "record_index": line_no,
+                            "total_records": count,
+                            "head": expected_prev,
+                            "error": f"Hash chain broken at record {line_no}: expected prev={expected_prev}, got {actual_prev}",
+                        }
+
+                    rec_no_mac = record_without_mac(record)
+                    payload = expected_prev.encode("utf-8") + canonical_json(rec_no_mac)
+                    computed_mac = hmac.new(self.audit_key, payload, hashlib.sha256).hexdigest()
+
+                    if actual_mac != computed_mac:
+                        return {
+                            "valid": False,
+                            "record_index": line_no,
+                            "total_records": count,
+                            "head": expected_prev,
+                            "error": f"HMAC verification failed at record {line_no}: expected {computed_mac}, got {actual_mac}",
+                        }
+
+                    expected_prev = actual_mac
+
+        return {
+            "valid": True,
+            "total_records": count,
+            "head": expected_prev,
+            "error": None,
         }

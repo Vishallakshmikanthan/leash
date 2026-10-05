@@ -82,20 +82,51 @@ def cmd_report(args: argparse.Namespace) -> None:
         out_file,
         session_scope=scope,
         changed_files=changed_files,
+        audit_key=audit_logger.audit_key,
     )
     receipt_md = ReceiptBuilder.generate_markdown(
         session_id,
         events,
         session_scope=scope,
         changed_files=changed_files,
+        audit_key=audit_logger.audit_key,
     )
     print(f"Report generated successfully: {out_file}\n")
     print(receipt_md)
 
 
+def cmd_receipt(args: argparse.Namespace) -> None:
+    config = DaemonConfig.load_default()
+    audit_logger = AuditLogger(config.audit_log_path)
+    if getattr(args, "receipt_action", None) == "verify":
+        target = Path(args.file)
+        if not target.exists():
+            print(f"Error: Receipt file not found: {target}")
+            sys.exit(1)
+        res = ReceiptBuilder.verify_receipt(target, audit_logger.audit_key)
+        if res.get("valid"):
+            print(f"Receipt signature verified successfully: {target}")
+            print(f"Signature: {res['signature']}")
+            return
+        else:
+            print(f"Receipt signature verification FAILED: {res.get('error')}")
+            sys.exit(1)
+    else:
+        print("Usage: leash receipt verify <file>")
+
+
 def cmd_audit(args: argparse.Namespace) -> None:
     config = DaemonConfig.load_default()
     audit_logger = AuditLogger(config.audit_log_path)
+
+    if getattr(args, "verify", False) or getattr(args, "audit_action", None) == "verify":
+        res = audit_logger.verify_integrity()
+        if res.get("valid"):
+            print(f"Audit log verified: {res['total_records']} records, head: {res['head']}")
+            return
+        else:
+            print(f"Audit log integrity verification failed at record {res['record_index']}: {res['error']}")
+            sys.exit(1)
 
     if args.sessions:
         sessions = audit_logger.list_sessions()
@@ -367,6 +398,65 @@ def cmd_rewind(args: argparse.Namespace) -> None:
         sys.exit(1)
 
 
+def cmd_merge(args: argparse.Namespace) -> None:
+    session_mgr = SessionManager(Path("."))
+    session_id = args.session
+    if not session_id:
+        sessions = session_mgr.list_sessions(active_only=True) or session_mgr.list_sessions()
+        if sessions:
+            session_id = sessions[0].session_id
+        else:
+            print("Error: Specify session ID to merge. Example: leash merge <session>")
+            sys.exit(1)
+
+    branch_name = f"leash/{session_id}"
+    print(f"=== LEASH HUMAN MERGE REVIEW FOR '{branch_name}' ===")
+
+    # Show receipt if exists
+    receipt = session_mgr.get_session_receipt(session_id)
+    if receipt:
+        print("\n--- Agent Session Receipt ---")
+        lines = receipt.strip().splitlines()
+        print("\n".join(lines[:25]))
+        if len(lines) > 25:
+            print(f"... ({len(lines) - 25} more lines in receipt)")
+        print("-----------------------------\n")
+
+    # Show git diffstat
+    try:
+        diff_res = subprocess.run(
+            ["git", "diff", f"HEAD..{branch_name}", "--stat"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if diff_res.returncode == 0 and diff_res.stdout.strip():
+            print("Diffstat:")
+            print(diff_res.stdout)
+    except Exception as ex:
+        print(f"Notice: Diff preview unavailable: {ex}")
+
+    # Execute git merge
+    print(f"Merging '{branch_name}' into current branch...")
+    try:
+        res = subprocess.run(
+            ["git", "merge", branch_name],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if res.returncode == 0:
+            print(f"[+] Successfully merged '{branch_name}' into current branch.")
+            if res.stdout.strip():
+                print(res.stdout.strip())
+        else:
+            print(f"[-] Merge failed: {res.stderr.strip()}")
+            sys.exit(res.returncode or 1)
+    except Exception as ex:
+        print(f"[-] Merge error: {ex}")
+        sys.exit(1)
+
+
 def cmd_office_kit(args: argparse.Namespace) -> None:
     session_mgr = SessionManager(Path("."))
     transfer = OfficeKitTransfer()
@@ -449,6 +539,52 @@ def cmd_mcp_proxy(args: argparse.Namespace) -> None:
     sys.exit(exit_code)
 
 
+def cmd_init(args: argparse.Namespace) -> None:
+    from daemon.policy_file import init_project
+    repo = Path(args.path or ".").resolve()
+    res = init_project(repo)
+    print("=== LEASH INITIALIZATION (M13) ===")
+    print(f"Repository Root:   {res['repo_root']}")
+    print(f"Policy Created:    {res['policy_created']} (leash.yml)")
+    print(f"Git Hooks:         {res['git_hooks_installed']}")
+    print(f"Shims Initialized: {res['shims_created']}")
+    print(f"Protection Level:  {res['protection_level']}")
+    print("==================================")
+
+
+def cmd_policy(args: argparse.Namespace) -> None:
+    from daemon.policy_file import PolicyLoader, PolicySuggester
+    repo = Path(".").resolve()
+    if args.action == "show":
+        policy = PolicyLoader.load(repo)
+        print("=== LEASH ACTIVE POLICY ===")
+        print(f"Mode:             {policy.mode}")
+        print(f"Scope paths:      {policy.scope_paths}")
+        print(f"Scope commands:   {policy.scope_commands}")
+        print(f"Scope hosts:      {policy.scope_hosts}")
+        print(f"Protected files:  {policy.protect_patterns}")
+        print(f"Policy Hash:      {policy.file_hash[:16]}..." if policy.file_hash else "None")
+        print("===========================")
+    elif args.action == "suggest":
+        config = DaemonConfig.load_default()
+        audit_logger = AuditLogger(config.audit_log_path)
+        events = audit_logger.read_all_events()
+        suggestions = PolicySuggester.suggest_rules(events)
+        if not suggestions:
+            print("No new allowlist suggestions based on current audit events.")
+        else:
+            print("=== LEASH POLICY SUGGESTIONS (M13.3) ===")
+            for s in suggestions:
+                print(f"- Command: {s['cmd']}")
+                print(f"  Reason:  {s['reason']}")
+            print("=======================================")
+
+
+def cmd_demo(args: argparse.Namespace) -> None:
+    from demo.run_demo import run_demo_suite
+    run_demo_suite()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="leash", description="Leash: Phone-based safety layer for AI coding agents.")
     subparsers = parser.add_subparsers(dest="command")
@@ -463,12 +599,20 @@ def main() -> None:
     report_parser = subparsers.add_parser("report", help="Generate Markdown agent receipt for PR")
     report_parser.add_argument("--session", default=None, help="Session ID to report (defaults to latest)")
 
-    # leash audit [--session S_ID] [--sessions] [--json] [--tail N]
+    # leash audit [--session S_ID] [--sessions] [--json] [--tail N] [verify] [--verify]
     audit_parser = subparsers.add_parser("audit", help="Inspect session audit log, decisions, and execution results")
+    audit_parser.add_argument("audit_action", nargs="?", choices=["verify"], default=None, help="Action to perform (e.g. verify)")
+    audit_parser.add_argument("--verify", action="store_true", help="Verify cryptographic hash chain integrity")
     audit_parser.add_argument("--session", default=None, help="Session ID to view activity for")
     audit_parser.add_argument("--sessions", action="store_true", help="List all recorded sessions")
     audit_parser.add_argument("--json", action="store_true", help="Output raw structured JSON")
     audit_parser.add_argument("--tail", type=int, default=None, help="Show last N activity events")
+
+    # leash receipt verify <file>
+    receipt_parser = subparsers.add_parser("receipt", help="Inspect or verify signed agent receipts")
+    receipt_sub = receipt_parser.add_subparsers(dest="receipt_action")
+    receipt_verify_parser = receipt_sub.add_parser("verify", help="Verify cryptographic signature of an agent receipt")
+    receipt_verify_parser.add_argument("file", help="Path to receipt Markdown file")
 
     # leash exec [--json] [--session S_ID] -- <command>
     exec_parser = subparsers.add_parser("exec", help="Execute a command through the Leash interceptor")
@@ -489,6 +633,10 @@ def main() -> None:
     rewind_parser = subparsers.add_parser("rewind", help="Restore repository files to point-in-time snapshot (N4)")
     rewind_parser.add_argument("--session", default=None, help="Session ID to rewind")
     rewind_parser.add_argument("--snapshot", default=None, help="Specific snapshot ref or action ID")
+
+    # leash merge <session>
+    merge_parser = subparsers.add_parser("merge", help="Review diff/receipt and merge session branch into current branch")
+    merge_parser.add_argument("session", help="Session ID to merge (e.g. s_123)")
 
     # leash session <list|pause|resume|terminate> [--session S_ID]
     sess_parser = subparsers.add_parser("session", help="Manage session lifecycle and safety states")
@@ -521,15 +669,29 @@ def main() -> None:
     run_parser.add_argument("--contain", action="store_true", default=False, help="Run with L2 Contained isolation (Docker/Podman/bwrap)")
     run_parser.add_argument("agent_cmd", nargs=argparse.REMAINDER, help="Agent command to execute")
 
+    # leash init [--path REPO]
+    init_parser = subparsers.add_parser("init", help="Initialize repository for Leash protection (M13.1)")
+    init_parser.add_argument("--path", default=".", help="Target repository directory (defaults to current dir)")
+
+    # leash policy <show|suggest>
+    policy_parser = subparsers.add_parser("policy", help="Inspect active policy or view learned allowlist suggestions (M13.3)")
+    policy_parser.add_argument("action", choices=["show", "suggest"], help="Action to perform")
+
     args = parser.parse_args()
 
-    if args.command == "pair":
+    if args.command == "init":
+        cmd_init(args)
+    elif args.command == "policy":
+        cmd_policy(args)
+    elif args.command == "pair":
         cmd_pair(args)
     elif args.command == "server":
         config = DaemonConfig.load_default()
         asyncio.run(run_server(config))
     elif args.command == "report":
         cmd_report(args)
+    elif args.command == "receipt":
+        cmd_receipt(args)
     elif args.command == "audit":
         cmd_audit(args)
     elif args.command == "exec":
@@ -540,6 +702,8 @@ def main() -> None:
         cmd_preview(args)
     elif args.command == "rewind":
         cmd_rewind(args)
+    elif args.command == "merge":
+        cmd_merge(args)
     elif args.command == "session":
         cmd_session(args)
     elif args.command == "office-kit":

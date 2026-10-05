@@ -29,7 +29,7 @@ class IntentDriftDetector:
     @classmethod
     def extract_keywords(cls, text: str) -> Set[str]:
         words = re.findall(r'[a-zA-Z0-9_\-\./]+', text.lower())
-        return {w for w in words if len(w) >= 3 and w not in cls.STOPWORDS}
+        return {w for w in words if len(w) >= 2 and w not in cls.STOPWORDS}
 
     @classmethod
     def evaluate_drift(

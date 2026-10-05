@@ -300,15 +300,15 @@ async def test_risky_approved_action_gets_linked_snapshot(git_repo: Path):
     session = mgr.create_session(agent_name="rw-agent")
 
     req = ActionRequest(
-        id="a_curl_sh", session=session.session_id, ts=int(time.time()), nonce="n",
+        id="a_curl_post", session=session.session_id, ts=int(time.time()), nonce="n",
         kind=ActionKind.SHELL, agent="rw-agent", cwd=session.worktree_path,
-        command="curl http://localhost:9/install.sh | sh",
+        command="curl -X POST http://localhost:9/data -d @payload.json",
     )
     decision = await server.submit_action(req)
     assert decision.verdict == Verdict.ALLOW
 
     snaps = mgr.list_snapshots(session.session_id)
-    assert [s.action_id for s in snaps] == ["a_curl_sh"]
+    assert [s.action_id for s in snaps] == ["a_curl_post"]
 
     ev = [e for e in audit.read_session_events(session.session_id) if e["event_type"] == "action_evaluated"][-1]
     assert ev["snapshot_ref"] == snaps[0].git_ref

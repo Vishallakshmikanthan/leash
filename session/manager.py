@@ -71,6 +71,7 @@ class SessionManager:
         self.active_session_id: Optional[str] = None
         self._session_raw_tokens: Dict[str, str] = {}
         self._token_hash_to_session: Dict[str, str] = {}
+        self._session_rewind_locks: Dict[str, Any] = {}
 
 
     @property
@@ -436,6 +437,14 @@ class SessionManager:
         """Retrieves list of provenance events recorded for this session."""
         return list(self.session_provenance_history.get(session_id, []))
 
+    def clear_taint(self, session_id: str) -> bool:
+        """Clears taint state for a session (e.g. upon user approval or reset on phone)."""
+        session = self.sessions.get(session_id)
+        if session:
+            session.tainted = False
+        self.session_taints[session_id] = TaintContext(tainted=False)
+        return True
+
     def is_session_tainted(self, session_id: str) -> bool:
         """Returns True if the session has ingested untrusted content."""
         return self.get_taint_context(session_id).tainted
@@ -470,29 +479,48 @@ class SessionManager:
 
     def rewind(self, session_id: str, git_ref: Optional[str] = None) -> bool:
         """Restores repository or worktree files to snapshot state (repository files only)."""
-        session = self.sessions.get(session_id)
-        snap = self.resolve_snapshot(session_id, git_ref)
-        target_ref = snap.git_ref if snap else git_ref
-        if not target_ref and session and session.snapshots:
-            target_ref = session.snapshots[-1]
+        import threading
+        if session_id not in self._session_rewind_locks:
+            self._session_rewind_locks[session_id] = threading.Lock()
 
-        if not target_ref:
-            return False
-        # Never rewind to a ref outside this session's namespace.
-        if not target_ref.startswith(f"refs/leash/{session_id}/"):
-            return False
+        with self._session_rewind_locks[session_id]:
+            session = self.sessions.get(session_id)
+            snap = self.resolve_snapshot(session_id, git_ref)
+            target_ref = snap.git_ref if snap else git_ref
+            if not target_ref and session and session.snapshots:
+                target_ref = session.snapshots[-1]
 
-        if session and session.worktree_path and not Path(session.worktree_path).exists():
-            return False  # never fall back to rewinding the main repository
-        worktree_path = Path(session.worktree_path) if session else None
-        ok = self.snapshot_mgr.rewind_to_snapshot(
-            target_ref, worktree_path=worktree_path, backup_session_id=session_id
-        )
-        if ok:
-            # Snapshots taken after the target describe a state that no longer exists in the tree,
-            # but they stay available as history.
-            logger.info(f"Session {session_id} rewound to {target_ref}")
-        return ok
+            if not target_ref:
+                return False
+            # Never rewind to a ref outside this session's namespace.
+            if not target_ref.startswith(f"refs/leash/{session_id}/"):
+                return False
+
+            if session and session.worktree_path and not Path(session.worktree_path).exists():
+                return False  # never fall back to rewinding the main repository
+            worktree_path = Path(session.worktree_path) if session else None
+            ok = self.snapshot_mgr.rewind_to_snapshot(
+                target_ref, worktree_path=worktree_path, backup_session_id=session_id
+            )
+            if ok:
+                # Check that git status --porcelain is clean or log remainder
+                target_dir = worktree_path or self.repo_root
+                try:
+                    import subprocess
+                    st = subprocess.run(
+                        ["git", "status", "--porcelain"],
+                        cwd=str(target_dir),
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    rem = st.stdout.strip()
+                    if rem:
+                        logger.warning(f"Session {session_id} worktree dirty after rewind:\n{rem}")
+                except Exception:
+                    pass
+                logger.info(f"Session {session_id} rewound to {target_ref}")
+            return ok
 
     def list_snapshots(self, session_id: str) -> List[SnapshotRef]:
         """Lists snapshots captured for the given session."""

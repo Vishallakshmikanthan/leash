@@ -1,0 +1,17 @@
+[
+  "requests", "urllib3", "certifi", "idna", "charset-normalizer", "pip", "setuptools",
+  "typing-extensions", "wheel", "packaging", "six", "numpy", "boto3", "botocore",
+  "python-dateutil", "s3transfer", "pydantic", "pytest", "cryptography", "cffi",
+  "click", "attrs", "jinja2", "markupsafe", "pyyaml", "rsa", "pyasn1", "pygments",
+  "importlib-metadata", "zipp", "colorama", "tomli", "rich", "iniconfig", "pluggy",
+  "scipy", "pandas", "pyarrow", "pillow", "aiohttp", "yarl", "multidict", "async-timeout",
+  "frozenlist", "aiosignal", "greenlet", "sqlalchemy", "pytz", "psutil", "decorator",
+  "tqdm", "certifi", "httpx", "httpcore", "sniffio", "anyio", "h11", "protobuf",
+  "coverage", "filelock", "virtualenv", "platformdirs", "distlib", "cachetools",
+  "googleapis-common-protos", "google-auth", "google-api-core", "grpcio", "grpcio-status",
+  "torch", "transformers", "scikit-learn", "joblib", "threadpoolctl", "regex",
+  "fsspec", "huggingface-hub", "tokenizers", "safetensors", "accelerate", "fastapi",
+  "starlette", "uvicorn", "websockets", "pydantic-core", "annotated-types", "typing-inspect",
+  "mypy-extensions", "marshmallow", "pyflakes", "mccabe", "flake8", "black", "mypy",
+  "isort", "ruff", "bandit", "safety", "pre-commit", "cfgv", "identify", "nodeenv"
+]

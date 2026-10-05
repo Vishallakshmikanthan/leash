@@ -124,6 +124,19 @@ class PackageKnowledge:
             if default_path.is_file():
                 self.load_corpus(default_path)
 
+        # Load data files from gates/data/
+        data_dir = Path(__file__).resolve().parent / "data"
+        for data_file in ("top_pypi.json", "top_npm.json"):
+            p = data_dir / data_file
+            if p.is_file():
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        pkgs = json.load(f)
+                        if isinstance(pkgs, list):
+                            self.popular_packages.update(x.lower() for x in pkgs)
+                except Exception:
+                    pass
+
     def load_corpus(self, path: Path) -> None:
         """Loads extended knowledge from JSON corpus."""
         try:
@@ -789,6 +802,9 @@ class PackageActionParser:
 # Package Gate
 # -----------------------------------------------------------------------------
 
+from gates.registry import RegistryClient, RegistryPackageInfo
+
+
 class PackageGate(BaseGate):
     """
     Package Gate (N1): Supply chain interceptor verifying package authenticity,
@@ -802,11 +818,31 @@ class PackageGate(BaseGate):
         lockfile_inspector: Optional[LockfileInspector] = None,
         allow_once_mgr: Optional[AllowOnceManager] = None,
         offline_mode: bool = True,
+        registry_client: Optional[RegistryClient] = None,
     ):
         self.knowledge = knowledge or PackageKnowledge()
         self.lockfile_inspector = lockfile_inspector or LockfileInspector()
         self.allow_once_mgr = allow_once_mgr or AllowOnceManager()
         self.offline_mode = offline_mode
+        self.registry_client = registry_client or RegistryClient(force_offline=offline_mode)
+
+    @staticmethod
+    def rewrite_command(command: str) -> str:
+        """Rewrites package install command to neutralize script execution risk."""
+        parts = command.strip().split()
+        if not parts:
+            return command
+        # npm/yarn/pnpm/bun install
+        if parts[0] in ("npm", "yarn", "pnpm", "bun"):
+            if any(sub in parts for sub in ("install", "i", "add")):
+                if "--ignore-scripts" not in parts:
+                    return f"{command.strip()} --ignore-scripts"
+        # pip install
+        if parts[0] in ("pip", "pip3") or (len(parts) >= 4 and parts[0].startswith("python") and parts[1] == "-m" and parts[2] == "pip"):
+            if "install" in parts:
+                if "--only-binary" not in command:
+                    return f"{command.strip()} --only-binary=:all:"
+        return command
 
     @property
     def name(self) -> str:
@@ -909,19 +945,50 @@ class PackageGate(BaseGate):
                     f"Package '{pkg_name}' is suspiciously close to popular package '{target_pop}' ({threat_desc})."
                 )
 
-            # Check 2: Lifecycle Install Scripts (preinstall, postinstall, install)
+            # Check 2: Live Registry Query (when online)
+            reg_info: Optional[RegistryPackageInfo] = None
+            if not self.offline_mode and self.registry_client:
+                reg_info = self.registry_client.query(pkg_name, ecosystem=parsed_action.ecosystem or "auto")
+                if not reg_info.offline:
+                    if not reg_info.exists:
+                        is_unknown = True
+                        if not is_typosquat:
+                            rule_id = "R-PKG-NOT-FOUND"
+                        severity = Severity.HIGH
+                        reasons.append(f"Package '{pkg_name}' not found on public registry.")
+                    else:
+                        if reg_info.is_recent:
+                            is_new_ver = True
+                            if not is_typosquat:
+                                rule_id = "R-PKG-NEW-PACKAGE"
+                            severity = Severity.HIGH
+                            days_str = f"{reg_info.first_published_days_ago:.1f}" if reg_info.first_published_days_ago is not None else "<7"
+                            reasons.append(
+                                f"Package '{pkg_name}' was first published under 7 days ago ({days_str} days ago)."
+                            )
+                        if reg_info.has_install_scripts and not parsed_action.has_ignore_scripts:
+                            has_script = True
+                            if not is_typosquat:
+                                rule_id = "R-PKG-INSTALL-SCRIPT"
+                            severity = Severity.HIGH
+                            script_names = ", ".join(reg_info.install_scripts) if reg_info.install_scripts else "lifecycle scripts"
+                            reasons.append(
+                                f"Package '{pkg_name}' contains lifecycle install scripts: {script_names}."
+                            )
+
+            # Check 3: Lifecycle Install Scripts (preinstall, postinstall, install) from local knowledge
             has_install_script, script_desc = self.knowledge.has_install_scripts(pkg_name)
             if has_install_script and not parsed_action.has_ignore_scripts:
                 has_script = True
                 if severity != Severity.CRITICAL:
                     severity = Severity.HIGH
-                if not is_typosquat:
+                if not is_typosquat and rule_id == "R-PKG-NEW-INSTALL":
                     rule_id = "R-PKG-INSTALL-SCRIPT"
                 reasons.append(
                     f"Package '{pkg_name}' contains lifecycle install scripts ({script_desc}) executing host commands."
                 )
 
-            # Check 3: Check against local lockfile (offline ground truth)
+            # Check 4: Check against local lockfile (offline ground truth)
             in_lockfile = pkg_name in locked_packages
             if in_lockfile:
                 locked_info = locked_packages[pkg_name]
@@ -930,20 +997,21 @@ class PackageGate(BaseGate):
                         f"Requested version '{version}' mismatches locked version '{locked_info.version}' in {locked_info.lockfile_source}."
                     )
             else:
-                # Check 4: Package does not exist in configured package knowledge & not in lockfile
-                if not self.knowledge.is_known_package(pkg_name):
+                # Check 5: Package does not exist in configured package knowledge & not in lockfile
+                if not self.knowledge.is_known_package(pkg_name) and (not reg_info or not reg_info.exists):
                     is_unknown = True
-                    if not is_typosquat and not has_script:
+                    if not is_typosquat and not has_script and rule_id == "R-PKG-NEW-INSTALL":
                         rule_id = "R-PKG-UNKNOWN"
-                    reasons.append(
-                        f"Package '{pkg_name}' does not exist in configured package knowledge and is not verified in local lockfile."
-                    )
+                    if not any("not found on public registry" in r for r in reasons):
+                        reasons.append(
+                            f"Package '{pkg_name}' does not exist in configured package knowledge and is not verified in local lockfile."
+                        )
 
-            # Check 5: Very new or suspicious version
+            # Check 6: Very new or suspicious version from local heuristics
             is_suspicious_ver, ver_desc = self.knowledge.is_suspicious_or_very_new_version(pkg_name, version)
             if is_suspicious_ver:
                 is_new_ver = True
-                if not is_typosquat and not has_script and not is_unknown:
+                if not is_typosquat and not has_script and not is_unknown and rule_id == "R-PKG-NEW-INSTALL":
                     rule_id = "R-PKG-NEW-VERSION"
                 reasons.append(
                     f"Package version '{version}' is very new or unvetted: {ver_desc}."

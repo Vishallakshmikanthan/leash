@@ -51,6 +51,10 @@ def audit_log_path() -> Path:
     return leash_home() / "audit.jsonl"
 
 
+def audit_key_path() -> Path:
+    return leash_home() / "audit.key"
+
+
 def devices_file_path() -> Path:
     return leash_home() / "devices.json"
 

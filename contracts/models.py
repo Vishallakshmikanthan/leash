@@ -30,6 +30,12 @@ class Verdict(str, Enum):
     DENY = "deny"
 
 
+class PolicyOutcome(str, Enum):
+    ALLOW = "allow"
+    ASK = "ask"
+    DENY = "deny"
+
+
 class DecidedBy(str, Enum):
     BIOMETRIC = "biometric"
     TAP = "tap"
@@ -241,6 +247,7 @@ class RiskAssessment:
     summary: str
     why: str
     safer_alternative: str
+    outcome: PolicyOutcome = PolicyOutcome.ASK
     tainted_escalation: bool = False
     taint_source: Optional[str] = None
     taint_line: Optional[int] = None
@@ -248,10 +255,16 @@ class RiskAssessment:
     def to_dict(self) -> Dict[str, Any]:
         res = asdict(self)
         res["severity"] = self.severity.value if isinstance(self.severity, Severity) else self.severity
+        res["outcome"] = self.outcome.value if isinstance(self.outcome, PolicyOutcome) else self.outcome
         return res
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> RiskAssessment:
+        outcome_raw = data.get("outcome", "ask")
+        try:
+            outcome = PolicyOutcome(outcome_raw)
+        except Exception:
+            outcome = PolicyOutcome.ASK
         return cls(
             id=data["id"],
             action_id=data["action_id"],
@@ -261,6 +274,7 @@ class RiskAssessment:
             summary=data["summary"],
             why=data["why"],
             safer_alternative=data["safer_alternative"],
+            outcome=outcome,
             tainted_escalation=bool(data.get("tainted_escalation", False)),
             taint_source=data.get("taint_source"),
             taint_line=data.get("taint_line"),
@@ -435,6 +449,11 @@ class AuditEvent:
     snapshot_ref: Optional[str] = None
     tainted: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
+    prev: Optional[str] = None
+    mac: Optional[str] = None
+    device_id: Optional[str] = None
+    device_sig: Optional[str] = None
+    action_digest: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -462,5 +481,10 @@ class AuditEvent:
             snapshot_ref=data.get("snapshot_ref"),
             tainted=bool(data.get("tainted", False)),
             metadata=data.get("metadata", {}),
+            prev=data.get("prev"),
+            mac=data.get("mac"),
+            device_id=data.get("device_id"),
+            device_sig=data.get("device_sig"),
+            action_digest=data.get("action_digest"),
         )
 

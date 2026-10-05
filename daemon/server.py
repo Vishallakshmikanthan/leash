@@ -27,6 +27,7 @@ from contracts.models import (
     CommandResult,
     DecidedBy,
     Decision,
+    PolicyOutcome,
     ProvenanceEvent,
     ProvenanceKind,
     RiskAssessment,
@@ -349,13 +350,17 @@ class LeashDaemonServer:
         return ips
 
     async def _handle_pairing(self, request: web.Request) -> web.Response:
-        return web.json_response({
+        data = {
             "host": self.config.host,
             "port": self.config.port,
             "protocol_version": "2.0",
             "pin": self.active_pairing_pin,
             "status": "ready",
-        })
+            "qr_uri": f"leash://pair?h={self.config.host}&p={self.config.port}&pin={self.active_pairing_pin}",
+        }
+        if self.config.enable_test_routes:
+            data["shared_secret"] = self.config.shared_secret
+        return web.json_response(data)
 
     async def _handle_get_pairing_pin(self, request: web.Request) -> web.Response:
         """Returns current 6-digit PIN and connection metadata without leaking master secrets."""
@@ -1720,14 +1725,17 @@ class LeashDaemonServer:
             event = self.session_mgr.notify_done(
                 session_id, exit_code=int(body.get("exit_code", 0)), message=body.get("message")
             )
+            await self.broadcast_to_phone("session_done", event)
         elif status == "stuck":
             event = self.session_mgr.notify_stuck(
                 session_id, reason=body.get("reason", "unknown error"), details=body.get("details")
             )
+            await self.broadcast_to_phone("session_stuck", event)
         elif status == "idle":
             event = self.session_mgr.notify_idle(
                 session_id, idle_seconds=float(body.get("idle_seconds", 30.0))
             )
+            await self.broadcast_to_phone("session_idle", event)
         else:
             event = {"session_id": session_id, "status": status, "message": body.get("message", "")}
 
@@ -2274,6 +2282,18 @@ class LeashDaemonServer:
                     }
                 }))
 
+            elif msg_type == "clear_taint":
+                sess_id = payload.get("session_id") or self.session_mgr.active_session_id
+                ok = self.session_mgr.clear_taint(sess_id or "")
+                await ws.send_str(json.dumps({
+                    "type": "taint_cleared",
+                    "payload": {
+                        "session_id": sess_id,
+                        "success": ok,
+                        "tainted": False,
+                    }
+                }))
+
         except Exception as e:
             logger.error(f"Error handling phone message: {e}")
 
@@ -2542,8 +2562,8 @@ class LeashDaemonServer:
                 )
             )
 
-        # 4. Low risk permitted automatically if clean
-        if assessment.severity == Severity.LOW and not taint.tainted and self.config.auto_allow_low_risk:
+        # 4. Action evaluation outcome (M4.1)
+        if assessment.outcome == PolicyOutcome.ALLOW and not taint.tainted and self.config.auto_allow_low_risk:
             latency = (time.time() - start_time) * 1000
             evt = self.audit_logger.record_action(
                 session_id=request.session,
@@ -2552,7 +2572,7 @@ class LeashDaemonServer:
                 command=request.command,
                 target_path=request.target_path,
                 verdict="allow",
-                risk_severity="low",
+                risk_severity=assessment.severity.value,
                 risk_category=assessment.category,
                 decided_by="rule",
                 agent=request.agent,
@@ -2570,7 +2590,7 @@ class LeashDaemonServer:
                 nonce=self.signer.generate_nonce(),
                 verdict=Verdict.ALLOW,
                 by=DecidedBy.RULE,
-                note="Safe standard development action allowed by rule.",
+                note=assessment.why or "Safe standard development action allowed by rule.",
             )
 
         # 5. Snapshot is taken after approval (see below), only for risky actions that are allowed.
@@ -2581,7 +2601,7 @@ class LeashDaemonServer:
         if not channel_available:
             verdict = (
                 Verdict.DENY
-                if assessment.severity in (Severity.HIGH, Severity.CRITICAL, Severity.MEDIUM)
+                if assessment.severity in (Severity.HIGH, Severity.CRITICAL, Severity.MEDIUM) or assessment.outcome == PolicyOutcome.DENY
                 else Verdict.ALLOW
             )
             decided_by = DecidedBy.RULE if verdict == Verdict.ALLOW else DecidedBy.TIMEOUT
@@ -2620,6 +2640,38 @@ class LeashDaemonServer:
                 verdict=verdict,
                 by=decided_by,
                 note=note,
+            )
+
+        if assessment.outcome == PolicyOutcome.DENY:
+            # Matches a hard rule. No phone prompt (the phone only shows the event - M4.1)
+            latency = (time.time() - start_time) * 1000
+            evt = self.audit_logger.record_action(
+                session_id=request.session,
+                action_id=request.id,
+                kind=request.kind.value,
+                command=request.command,
+                target_path=request.target_path,
+                verdict="deny",
+                risk_severity=assessment.severity.value,
+                risk_category=assessment.category,
+                decided_by="rule",
+                agent=request.agent,
+                worktree=request.worktree,
+                risk_assessment=assessment.to_dict(),
+                latency_ms=latency,
+                tainted=taint.tainted,
+                metadata={"note": assessment.why},
+            )
+            asyncio.create_task(self.broadcast_to_phone("audit_event", evt.to_dict()))
+            return Decision(
+                id=f"d_hard_deny_{request.id}",
+                action_id=request.id,
+                session=request.session,
+                ts=int(time.time()),
+                nonce=self.signer.generate_nonce(),
+                verdict=Verdict.DENY,
+                by=DecidedBy.RULE,
+                note=f"Hard policy rule violation ({assessment.rule_ids[0] if assessment.rule_ids else 'hard-rule'}): {assessment.summary}",
             )
 
         # 7. Pause execution and wait for Decision
