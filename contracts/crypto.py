@@ -40,6 +40,9 @@ class LeashSigner:
         clean = {k: v for k, v in data.items() if k != "sig"}
         return self.sign(canonical_json(clean))
 
+    def sign_action(self, data: Dict[str, Any]) -> str:
+        return self.sign_dict(data)
+
     def verify(self, payload: bytes, signature: str, ts: int, nonce: str) -> bool:
         current_time = time.time()
         # 1. Freshness check
